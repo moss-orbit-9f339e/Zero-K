@@ -395,7 +395,7 @@ local registeredBuilders = {}
 function gadget:UnitFinished(uid, udid)
 	if (UnitDefs[udid].isBuilder) and not registeredBuilders[uid] then
 		BuilderFinished(uid)
-		registeredBuilders[uid] = nil
+		registeredBuilders[uid] = true
 	end
 end
 
