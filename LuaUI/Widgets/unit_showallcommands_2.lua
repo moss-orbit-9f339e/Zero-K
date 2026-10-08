@@ -33,9 +33,6 @@ local glLineWidth   = gl.LineWidth
 local glColor       = gl.Color
 local glBeginEnd    = gl.BeginEnd
 local glPopAttrib   = gl.PopAttrib
-local glCreateList  = gl.CreateList
-local glCallList    = gl.CallList
-local glDeleteList  = gl.DeleteList
 local GL_LINES      = GL.LINES
 
 -- Constans
@@ -194,7 +191,27 @@ end
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 -- Drawing
-local drawList = 0
+
+-- Set-target lines recorded by Update and drawn by DrawWorld, 7 entries per line:
+-- x1, y1, z1, x2, y2, z2, color index.
+local lineColors = {
+	{1, 0.8, 0, setTargetAlpha},
+	{1, 1, 0, setTargetAlpha},
+}
+local lineData = {}
+local lineCount = 0
+
+local function AddLine(colorIndex, x1, y1, z1, x2, y2, z2)
+	local i = lineCount*7
+	lineData[i + 1] = x1
+	lineData[i + 2] = y1
+	lineData[i + 3] = z1
+	lineData[i + 4] = x2
+	lineData[i + 5] = y2
+	lineData[i + 6] = z2
+	lineData[i + 7] = colorIndex
+	lineCount = lineCount + 1
+end
 
 local function GetDrawLevel()
 	local ahiftHeld = select(4,spGetModKeyState())
@@ -245,7 +262,7 @@ local function getTargetPosition(unitID)
 	return tx, ty, tz, fireTowards
 end
 
-local function drawUnitCommands(unitID)
+local function collectUnitCommands(unitID)
 	if not unitID then
 		return
 	end
@@ -256,35 +273,15 @@ local function drawUnitCommands(unitID)
 		if fireTowards then
 			local dist = math.sqrt((x - tx)^2 + (y - ty)^2 + (z - tz)^2)
 			if dist < fireTowards then
-				glColor(1, 0.8, 0, setTargetAlpha)
-				glBeginEnd(GL.LINES,
-					function()
-						glVertex(x,y,z)
-						glVertex(tx, ty, tz)
-					end)
+				AddLine(1, x, y, z, tx, ty, tz)
 			else
 				local mult = fireTowards / dist
 				local mx, my, mz = (tx - x)*mult + x, (ty - y)*mult + y, (tz - z)*mult + z
-				glColor(1, 0.8, 0, setTargetAlpha)
-				glBeginEnd(GL.LINES,
-					function()
-						glVertex(x,y,z)
-						glVertex(mx, my, mz)
-					end)
-				glColor(1, 1, 0, setTargetAlpha)
-				glBeginEnd(GL.LINES,
-					function()
-						glVertex(tx, ty, tz)
-						glVertex(mx, my, mz)
-					end)
+				AddLine(1, x, y, z, mx, my, mz)
+				AddLine(2, tx, ty, tz, mx, my, mz)
 			end
 		else
-			glColor(1, 0.8, 0, setTargetAlpha)
-			glBeginEnd(GL.LINES,
-				function()
-					glVertex(x,y,z)
-					glVertex(tx,ty,tz)
-				end)
+			AddLine(1, x, y, z, tx, ty, tz)
 		end
 	end
 end
@@ -295,7 +292,7 @@ local function updateDrawing()
 		local count = drawUnit.count
 		local units = drawUnit.data
 		for i = 1, count do
-			drawUnitCommands(units[i])
+			collectUnitCommands(units[i])
 		end
 		spDrawUnitCommands(units)
 	elseif drawSelected then
@@ -304,7 +301,7 @@ local function updateDrawing()
 		local toDraw = {}
 		for i = 1, selectedUnitCount do
 			if sel[i] then
-				drawUnitCommands(sel[i])
+				collectUnitCommands(sel[i])
 				alreadyDrawn[sel[i]] = true
 				toDraw[#toDraw + 1] = sel[i]
 			end
@@ -315,7 +312,7 @@ local function updateDrawing()
 			for i = 1, count do
 				local unitID = units[i]
 				if unitID and WG.allySelUnits[unitID] and not alreadyDrawn[sel[i]] then
-					drawUnitCommands(unitID)
+					collectUnitCommands(unitID)
 					alreadyDrawn[unitID] = true
 					toDraw[#toDraw + 1] = unitID
 				end
@@ -328,23 +325,42 @@ local function updateDrawing()
 end
 
 function widget:Update()
-	if drawList ~= 0 then
-		glDeleteList(drawList)
-		drawList = 0
-	end
-	
+	lineCount = 0
 	if not spIsGUIHidden() then
-		drawList = glCreateList(updateDrawing)
+		-- Must stay in Update: Spring.DrawUnitCommands only queues units for the engine's command
+		-- drawer. The set-target lines are recorded here and drawn by DrawWorld instead of being
+		-- compiled into (and deleted from) a display list every frame. pcall like gl.CreateList: an
+		-- error (e.g. WG.allySelUnits missing) is logged and draws nothing instead of removing the widget.
+		local ok, err = pcall(updateDrawing)
+		if not ok then
+			lineCount = 0
+			Spring.Log(widget:GetInfo().name, LOG.ERROR, err)
+		end
+	end
+end
+
+local function DrawCollectedLines()
+	local data = lineData
+	for i = 0, (lineCount - 1)*7, 7 do
+		local col = lineColors[data[i + 7]]
+		glColor(col[1], col[2], col[3], col[4])
+		glVertex(data[i + 1], data[i + 2], data[i + 3])
+		glVertex(data[i + 4], data[i + 5], data[i + 6])
 	end
 end
 
 function widget:DrawWorld()
-	if drawList ~= 0 then
+	if lineCount > 0 then
+		-- GL.LINE_BITS does not exist (GL.LINE_BIT does), so this pushes GL.ALL_ATTRIB_BITS and the
+		-- pop restores the depth test and current color too: the block is state-neutral, so it is
+		-- skipped when there are no lines.
 		glPushAttrib(GL.LINE_BITS)
 		gl.LineStipple("springdefault")
 		glDepthTest(false)
 		glLineWidth(1)
-		glCallList(drawList)
+		-- One GL_LINES batch: the stipple counter restarts at every independent segment, exactly as
+		-- with one glBegin/glEnd per segment, and glColor is legal between glBegin and glEnd.
+		glBeginEnd(GL_LINES, DrawCollectedLines)
 		glColor(1, 1, 1, 1)
 		glLineStipple(false)
 		glPopAttrib()
