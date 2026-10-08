@@ -114,7 +114,14 @@ end
 --------------------------------------------------------------------------------
 -- OPTIONS
 --------------------------------------------------------------------------------
+-- GL4 path: re-gather the bars of every tracked unit/feature in the next pass
+-- (options, player or tracking state changed).
+local gl4ForceFullUnits = true
+local gl4ForceFullFeatures = true
+
 local function OptionsChanged()
+	gl4ForceFullUnits = true
+	gl4ForceFullFeatures = true
 	drawFeatureHealth = options.drawFeatureHealth.value
 	drawBarPercentages = options.drawBarPercentages.value
 	barScale = options.barScale.value
@@ -179,6 +186,7 @@ options = {
 		type = 'bool',
 		value = false,
 		desc = 'A few rare units (eg Detriment jump charge) show their status to enemies.',
+		OnChange = OptionsChanged,
 	},
 	barScale = {
 		name = 'Bar size scale',
@@ -576,6 +584,17 @@ local UnitMorphs  = {}
 -- GL4 paralyze effect (WG.DrawParalyzedUnitGL4) draws these overlays. Set in DrawWorld.
 local gatherOverlays = true
 
+-- True while bars are gathered for the instanced (GL4) path instead of being drawn
+-- right away: the bar drawer then also records what the GPU needs (colour kind, the
+-- alternate blink colour and frame-linear progress) and skips the text strings.
+local gl4Gather = false
+
+-- GL4 path state, see "GL4 (instanced) path" below.
+local gl4Ready = false          -- GL4 resources exist
+local gl4Active = false         -- the GL4 path draws this frame (set in Update)
+local camBelowMaxHeight = false -- IsCameraBelowMaxHeight() of this frame's Update
+local InitGL4, ShutdownGL4, ResetGL4, UpdateGL4, DrawWorldGL4, UntrackUnitGL4
+
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
@@ -701,8 +720,14 @@ local function GetBarDrawer()
 
 	local invertKey   = {} -- status -> "invert_" .. status
 	local percentText = {} -- floor(percent*100) -> "NN%"
+	local durationColors = {} -- status -> {status_p colour, status_b colour}
 
-	function externalFunc.AddPercentBar(status, percent, color, textOverride)
+	-- GL4 extras (only while gl4Gather): barInfo.kind selects the colour on the GPU
+	-- (0: c1, 1: duration bar blinking c1 = "_p" / c2 = "_b", 2: jump flash c1 = jump_b / c2 = jump_p)
+	-- and progress = pa + pb*(pend - gameFrame). Bars whose value is a linear function of
+	-- the game frame pass percent == timerBase + timerSlope*(timerEnd - gameFrame), so the
+	-- GPU can advance them every frame without uploads. Everything else has pb = 0.
+	function externalFunc.AddPercentBar(status, percent, color, textOverride, timerEnd, timerBase, timerSlope)
 		barsN = barsN + 1
 		local barInfo = bars[barsN]
 		local progress = percent
@@ -711,13 +736,34 @@ local function GetBarDrawer()
 			key = "invert_" .. status
 			invertKey[status] = key
 		end
-		if options[key].value then
+		local inverted = options[key].value
+		if inverted then
 			progress = 1 - progress
 		end
 		if barInfo then
 			barInfo.title    = addTitle and messages[status]
 			barInfo.progress = progress
 			barInfo.color    = color or barColors[status]
+			if gl4Gather then
+				barInfo.text   = false
+				barInfo.status = status
+				if (status == "jump") and not color then
+					barInfo.kind, barInfo.c1, barInfo.c2 = 2, barColors.jump_b, barColors.jump_p
+				else
+					barInfo.kind, barInfo.c1, barInfo.c2 = 0, barInfo.color, barInfo.color
+				end
+				if timerEnd then
+					if inverted then
+						barInfo.pa, barInfo.pb = 1 - timerBase, -timerSlope
+					else
+						barInfo.pa, barInfo.pb = timerBase, timerSlope
+					end
+					barInfo.pend = timerEnd
+				else
+					barInfo.pa, barInfo.pb, barInfo.pend = progress, 0, 0
+				end
+				return
+			end
 			local text = addPercent
 			if addPercent then
 				text = textOverride
@@ -742,6 +788,19 @@ local function GetBarDrawer()
 		if barInfo then
 			barInfo.title    = addTitle and messages[status]
 			barInfo.progress = 1
+			if gl4Gather then
+				local dc = durationColors[status]
+				if not dc then
+					dc = {barColors[status .. "_p"], barColors[status .. "_b"]}
+					durationColors[status] = dc
+				end
+				barInfo.color  = dc[1]
+				barInfo.text   = false
+				barInfo.status = status
+				barInfo.kind, barInfo.c1, barInfo.c2 = 1, dc[1], dc[2]
+				barInfo.pa, barInfo.pb, barInfo.pend = 1, 0, 0
+				return
+			end
 			barInfo.color    = barColors[(status .. ((blink and "_b") or "_p"))]
 			barInfo.text     = addPercent and floor(duration) .. 's'
 		end
@@ -749,6 +808,21 @@ local function GetBarDrawer()
 
 	function externalFunc.HasBars()
 		return (barsN ~= 0)
+	end
+
+	-- Hands the gathered bars to the GL4 path instead of drawing them.
+	function externalFunc.TakeBars()
+		local n = barsN
+		barsN = 0
+		if n > maxBars then
+			n = maxBars
+		end
+		return bars, n
+	end
+
+	-- Row spacing as used by DrawBars/DrawBarsFeature (fixed when the drawer is created).
+	function externalFunc.GetRowSteps()
+		return barHeightL, fBarHeightL
 	end
 
 	function externalFunc.DrawBars()
@@ -799,6 +873,8 @@ local barDrawer = GetBarDrawer()
 
 local DrawUnitInfos
 local JustGetOverlayInfos
+local GetUnitCustomInfo
+local GatherUnitBarsGL4
 
 do
 	--//speedup
@@ -813,6 +889,7 @@ do
 	local GetUnitViewPosition  = Spring.GetUnitViewPosition
 	local GetUnitStockpile     = Spring.GetUnitStockpile
 	local GetUnitRulesParam    = Spring.GetUnitRulesParam
+	local GetUnitIsDead        = Spring.GetUnitIsDead
 
 	local ux, uy, uz
 	local dx, dy, dz, dist
@@ -877,7 +954,7 @@ do
 		end
 	end
 
-	function DrawUnitInfos(unitID, unitDefID)
+	function GetUnitCustomInfo(unitDefID)
 		if (not customInfo[unitDefID]) then
 			local ud = UnitDefs[unitDefID]
 			customInfo[unitDefID] = {
@@ -906,21 +983,11 @@ do
 				customInfo[unitDefID].captureReload = tonumber(ud.customParams.post_capture_reload)
 			end
 		end
-		ci = customInfo[unitDefID]
+		return customInfo[unitDefID]
+	end
 
-		local ux, uy, uz = GetUnitViewPosition(unitID)
-		if not ux then
-			return
-		end
-		local dx, dy, dz = ux-cx, uy-cy, uz-cz
-		local dist = dx*dx + dy*dy + dz*dz
-
-		if (dist > healthbarDistSq) then
-			return
-		end
-		addPercent = (dist < healthbarPercentSq)
-		addTitle = (dist < healthbarTitleSq)
-
+	-- Adds all bars of one unit to barDrawer (uses the upvalue ci of that unit's def).
+	local function GatherUnitBars(unitID)
 		--// GET UNIT INFORMATION
 		local health, maxHealth, paralyzeDamage, capture, build = GetUnitHealth(unitID)
 		paralyzeDamage = GetUnitRulesParam(unitID, "real_para") or paralyzeDamage
@@ -936,7 +1003,8 @@ do
 		local emp = (paralyzeDamage or 0)/empHP
 		local hp  = (health or 0)/maxHealth
 
-		if (drawFullHealthBars or hp < 1) and Spring.GetUnitIsDead(unitID) then
+		-- health is only read by the health bar, which needs hp < 1 (or drawFullHealthBars)
+		if ((hp < 1) or drawFullHealthBars) and GetUnitIsDead(unitID) then
 			health = false
 		end
 
@@ -1008,6 +1076,7 @@ do
 		
 		--// PARALYZE
 		local paraTime = false
+		-- stunned is only read with paralyze damage or for the disarm overlay list
 		local stunned = false
 		if ((emp > 0) and (emp < 1e8)) or gatherOverlays then
 			stunned = GetUnitIsStunned(unitID)
@@ -1034,7 +1103,7 @@ do
 			local disarmProp = (disarmFrame - gameFrame)/1200
 			if disarmProp < 1 then
 				if (not paraTime) and disarmProp > emp + 0.014 then -- 16 gameframes of emp time
-					barDrawer.AddPercentBar("disarm", disarmProp)
+					barDrawer.AddPercentBar("disarm", disarmProp, nil, nil, disarmFrame, 0, 1/1200)
 				end
 			else
 				local disarmTime = (disarmFrame - gameFrame - 1200)/gameSpeed
@@ -1057,7 +1126,7 @@ do
 			local captureReloadState = GetUnitRulesParam(unitID, "captureRechargeFrame")
 			if (captureReloadState and captureReloadState > 0) then
 				local capture = 1-(captureReloadState-gameFrame)/ci.captureReload
-				barDrawer.AddPercentBar("capture_reload", capture)
+				barDrawer.AddPercentBar("capture_reload", capture, nil, nil, captureReloadState, 1, -1/ci.captureReload)
 			end
 		end
 		
@@ -1065,16 +1134,17 @@ do
 		local TeleportEnd = GetUnitRulesParam(unitID, "teleportend")
 		local TeleportCost = TeleportEnd and GetUnitRulesParam(unitID, "teleportcost")
 		if TeleportEnd and TeleportCost and TeleportEnd >= 0 then
-			local prog
+			local prog, timerEnd
 			if TeleportEnd > 1 then
 				-- End frame given
 				prog = 1 - (TeleportEnd - gameFrame)/TeleportCost
+				timerEnd = TeleportEnd
 			else
 				-- Same parameters used to display a static progress
 				prog = 1 - TeleportEnd
 			end
 			if prog < 1 then
-				barDrawer.AddPercentBar("teleport", prog)
+				barDrawer.AddPercentBar("teleport", prog, nil, nil, timerEnd, 1, timerEnd and -1/TeleportCost)
 			end
 		end
 		
@@ -1084,7 +1154,7 @@ do
 			if TeleportEnd then
 				local prog = 1 - (TeleportEnd - gameFrame)/TELEPORT_CHARGE_NEEDED
 				if prog < 1 then
-					barDrawer.AddPercentBar("teleport_pw", prog)
+					barDrawer.AddPercentBar("teleport_pw", prog, nil, nil, TeleportEnd, 1, -1/TELEPORT_CHARGE_NEEDED)
 				end
 			end
 		end
@@ -1102,7 +1172,7 @@ do
 				local specialReloadState = GetUnitRulesParam(unitID, "specialReloadFrame")
 				if (specialReloadState and specialReloadState > gameFrame) then
 					local special = 1-(specialReloadState-gameFrame)/ci.specialReload -- don't divide by gamespeed, since specialReload is also in gameframes
-					barDrawer.AddPercentBar("ability", special)
+					barDrawer.AddPercentBar("ability", special, nil, nil, specialReloadState, 1, -1/ci.specialReload)
 				end
 			end
 		end
@@ -1136,7 +1206,7 @@ do
 			local primaryWeapon = (ci.dyanmicComm and GetUnitRulesParam(unitID, "primary_weapon_override")) or ci.primaryWeapon
 			_, reloaded, reloadFrame = GetUnitWeaponState(unitID, primaryWeapon)
 			if (reloaded == false) then
-				local reloadTime = Spring.GetUnitWeaponState(unitID, primaryWeapon, 'reloadTime')
+				local reloadTime = GetUnitWeaponState(unitID, primaryWeapon, 'reloadTime')
 				if (not ci.dyanmicComm) or (reloadTime >= options.minReloadTime.value) then
 					ci.reloadTime = reloadTime
 					-- When weapon is disabled the reload time is constantly set to be almost complete.
@@ -1144,7 +1214,7 @@ do
 					if (reloadFrame > gameFrame + 6) or (GetUnitRulesParam(unitID, "reloadPaused") ~= 1) then -- UPDATE_PERIOD in unit_attributes.lua.
 						reload = 1 - ((reloadFrame-gameFrame)/gameSpeed) / ci.reloadTime;
 						if (reload >= 0) then
-							barDrawer.AddPercentBar("reload", reload)
+							barDrawer.AddPercentBar("reload", reload, nil, nil, reloadFrame, 1, -1/(gameSpeed*ci.reloadTime))
 						end
 					end
 				end
@@ -1155,10 +1225,15 @@ do
 			local reloadFrame = GetUnitRulesParam(unitID, "scriptReloadFrame")
 			if reloadFrame and reloadFrame > gameFrame then
 				local scriptLoaded = GetUnitRulesParam(unitID, "scriptLoaded") or ci.scriptBurst
-				reload = Spring.GetUnitRulesParam(unitID, "scriptReloadPercentage") or (1 - ((reloadFrame - gameFrame)/gameSpeed) / ci.scriptReload)
+				local reloadPercentage = GetUnitRulesParam(unitID, "scriptReloadPercentage")
+				reload = reloadPercentage or (1 - ((reloadFrame - gameFrame)/gameSpeed) / ci.scriptReload)
 				local barText = addPercent and string.format("%i/%i", scriptLoaded, ci.scriptBurst) -- .. ' | ' .. floor(reload*100) .. '%'
 				if (reload >= 0) then
-					barDrawer.AddPercentBar("reload", reload, false, barText)
+					if reloadPercentage then
+						barDrawer.AddPercentBar("reload", reload, false, barText)
+					else
+						barDrawer.AddPercentBar("reload", reload, false, barText, reloadFrame, 1, -1/(gameSpeed*ci.scriptReload))
+					end
 				end
 			end
 		end
@@ -1197,7 +1272,31 @@ do
 				barDrawer.AddPercentBar("jump_charge", (jumpReload - 1) / (ci.jumpCharges - 1), false, barText)
 			end
 		end
-		
+	end
+
+	-- nearOnlySq: only draw the unit if it is closer than this (squared distance); the GL4
+	-- path draws the bars of all units further away.
+	function DrawUnitInfos(unitID, unitDefID, nearOnlySq)
+		ci = GetUnitCustomInfo(unitDefID)
+
+		local ux, uy, uz = GetUnitViewPosition(unitID)
+		if not ux then
+			return
+		end
+		local dx, dy, dz = ux-cx, uy-cy, uz-cz
+		local dist = dx*dx + dy*dy + dz*dz
+
+		if (dist > healthbarDistSq) then
+			return
+		end
+		if nearOnlySq and (dist >= nearOnlySq) then
+			return
+		end
+		addPercent = (dist < healthbarPercentSq)
+		addTitle = (dist < healthbarTitleSq)
+
+		GatherUnitBars(unitID)
+
 		if debugMode then
 			local x, y, z = Spring.GetUnitPosition(unitID)
 			--Spring.MarkerAddPoint(x, y, z, "N" .. barsN)
@@ -1222,12 +1321,31 @@ do
 		end
 	end
 
+	-- Gathers the bars of one unit for the GL4 path (no position, distance or text).
+	-- Returns the bar array, the bar count, the height of the bar stack above the unit
+	-- base and the unit def's custom info (unitCI: GetUnitCustomInfo(unitDefID), if known).
+	function GatherUnitBarsGL4(unitID, unitDefID, unitCI)
+		ci = unitCI or GetUnitCustomInfo(unitDefID)
+		addPercent = false
+		addTitle = false
+		gl4Gather = true
+		GatherUnitBars(unitID)
+		gl4Gather = false
+		local bars, n = barDrawer.TakeBars()
+		local height = 0
+		if n > 0 then
+			height = ci.height*(GetUnitRulesParam(unitID, "currentModelScale") or 1)
+		end
+		return bars, n, height, ci
+	end
+
 end --// end do
 
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
 local DrawFeatureInfos
+local GatherFeatureBarsGL4
 
 do
 	--//speedup
@@ -1245,15 +1363,18 @@ do
 	local customInfo = {}
 	local ci
 
-	function DrawFeatureInfos(featureID, featureDefID, fx, fy, fz)
+	local function GetFeatureCustomInfo(featureDefID)
 		if (not customInfo[featureDefID]) then
 			local featureDef = FeatureDefs[featureDefID or -1] or {height = 0, name = ''}
 			customInfo[featureDefID] = {
 				height = featureDef.height+14,
 			}
 		end
-		ci = customInfo[featureDefID]
+		return customInfo[featureDefID]
+	end
 
+	-- Adds all bars of one feature to barDrawer.
+	local function GatherFeatureBars(featureID)
 		health, maxHealth, resurrect = GetFeatureHealth(featureID)
 		_, _, _, _, reclaimLeft      = GetFeatureResources(featureID) -- NB: the two resources' progresses are actually separate (goo can drain just M while keeping E)
 		if (not resurrect) then
@@ -1288,6 +1409,12 @@ do
 		if (reclaimLeft > 0 and reclaimLeft < 1) then
 			barDrawer.AddPercentBar("reclaim", reclaimLeft)
 		end
+	end
+
+	function DrawFeatureInfos(featureID, featureDefID, fx, fy, fz)
+		ci = GetFeatureCustomInfo(featureDefID)
+
+		GatherFeatureBars(featureID)
 
 		if barDrawer.HasBars() then
 			glPushMatrix()
@@ -1301,6 +1428,19 @@ do
 
 			glPopMatrix()
 		end
+	end
+
+	-- Gathers the bars of one feature for the GL4 path. Returns the bar array, the bar
+	-- count and the height of the bar stack above the feature position.
+	function GatherFeatureBarsGL4(featureID, featureDefID)
+		ci = GetFeatureCustomInfo(featureDefID)
+		addPercent = false
+		addTitle = false
+		gl4Gather = true
+		GatherFeatureBars(featureID)
+		gl4Gather = false
+		local bars, n = barDrawer.TakeBars()
+		return bars, n, ci.height
 	end
 
 end --// end do
@@ -1415,6 +1555,7 @@ end --//end do
 function widget:PlayerChanged()
 	myAllyTeamID = Spring.GetLocalAllyTeamID()
 	spectating = Spring.GetSpectatingState()
+	gl4ForceFullUnits = true
 end
 
 function widget:Initialize()
@@ -1463,6 +1604,8 @@ function widget:Initialize()
 	for hp = 0, 100 do
 		bfcolormap[hp] = {GetColor(hpcolormap, hp*0.01)}
 	end
+
+	gl4Ready = InitGL4()
 end
 
 function widget:Shutdown()
@@ -1481,6 +1624,22 @@ function widget:Shutdown()
 	widgetHandler:DeregisterGlobal('MorphStop', MorphStop)
 
 	widgetHandler:DeregisterGlobal('MorphDrawProgress')
+
+	if gl4Ready then
+		ShutdownGL4()
+		gl4Ready = false
+		gl4Active = false
+	end
+end
+
+function widget:RenderUnitDestroyed(unitID)
+	-- The engine frees the unit's uniform slot; another unit may get it. (LuaUI only
+	-- gets this for its own allyteam's units unless it has full read; other units
+	-- leave the visible list in the same sim frame and are dropped by the next pass,
+	-- which runs before the next DrawWorld.)
+	if gl4Active then
+		UntrackUnitGL4(unitID)
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -1488,6 +1647,991 @@ end
 
 local visibleFeatures = {}
 local visibleUnits = {}
+
+--------------------------------------------------------------------------------
+-- GL4 (instanced) path
+--------------------------------------------------------------------------------
+-- Every bar is one point in a VBO (one VBO for units, one for features). A geometry
+-- shader expands it into the background and progress quads of the immediate mode
+-- path, billboarded at the unit's draw position, which the vertex shader reads from
+-- the engine's per-unit uniform buffer (no GetUnitViewPosition calls). Bars are
+-- gathered once per simulation frame (their inputs only change then) and only the
+-- elements that changed are uploaded. Draw-frame dependent things are evaluated on
+-- the GPU: visibility (engine draw flag), distance fading, the blink and jump flash
+-- colours and the progress of bars that advance linearly with the game frame
+-- (reload & co, see AddPercentBar).
+-- Units/features close enough to show text (percentages, titles) and units with a
+-- stockpile (icon + count) use immediate mode. Ordered GPU ranges stop around them
+-- so overlapping bars keep the original alpha-blending order.
+-- Without engine GL4 support, or if the shader fails, the immediate mode path draws.
+-- The GL4 path is only used while the GL4 paralyze effect draws the stun/disarm/fire
+-- overlays (WG.DrawParalyzedUnitGL4); the old overlays need the immediate mode path.
+-- (state variables and forward declarations are near the top of the file)
+
+do
+	local LuaShader -- loaded on first use (InitGL4)
+
+	local spGetUnitDefID       = Spring.GetUnitDefID
+	local spGetUnitRulesParam  = Spring.GetUnitRulesParam
+	local spValidFeatureID     = Spring.ValidFeatureID
+	local spGetCameraPosition  = Spring.GetCameraPosition
+	local glUniform            = gl.Uniform
+	local glDepthMask          = gl.DepthMask
+	local glMultiTexCoord      = gl.MultiTexCoord
+	local GL_POINTS            = GL.POINTS
+	local tsort                = table.sort
+
+	local STEP = 20 -- floats per bar element (see BAR_LAYOUT)
+	local BAR_LAYOUT = {
+		{id = 0, name = "posHeight", size = 4},                      -- xyz: feature position, w: stack height above it
+		{id = 1, name = "barInfo",   size = 4},                      -- x: row*4 + colour kind, progress = y + z*(w - gameFrame)
+		{id = 2, name = "color1",    size = 4},
+		{id = 3, name = "color2",    size = 4},                      -- blink / flash colour
+		{id = 4, name = "instData",  size = 4, type = GL.UNSIGNED_INT}, -- units: engine instance data (y: uniform index)
+	}
+	local INSTDATA_LAYOUT = {
+		{id = 0, name = "instData", size = 4, type = GL.UNSIGNED_INT},
+	}
+
+	local vsSrc = [==[
+#version 420
+#extension GL_ARB_uniform_buffer_object : require
+#extension GL_ARB_shader_storage_buffer_object : require
+#extension GL_ARB_shading_language_420pack: require
+
+#line 5000
+
+layout (location = 0) in vec4 posHeight;
+layout (location = 1) in vec4 barInfo;
+layout (location = 2) in vec4 color1;
+layout (location = 3) in vec4 color2;
+layout (location = 4) in uvec4 instData;
+
+//__ENGINEUNIFORMBUFFERDEFS__
+//__DEFINES__
+
+struct SUniformsBuffer {
+	uint composite; //     u8 drawFlag; u8 unused1; u16 id;
+
+	uint unused2;
+	uint unused3;
+	uint unused4;
+
+	float maxHealth;
+	float health;
+	float unused5;
+	float unused6;
+
+	vec4 drawPos;
+	vec4 speed;
+	vec4[4] userDefined; //can't use float[16] because float in arrays occupies 4 * float space
+};
+
+layout(std140, binding=1) readonly buffer UniformsBuffer {
+	SUniformsBuffer uni[];
+};
+
+#line 10000
+
+uniform vec4 distParams;  // x: max dist sq, y: min dist sq (nearer bars are drawn by Lua), z: 1 = position from posHeight (features), w: 1 = always draw the background
+uniform vec4 blinkParams; // x: duration bar blink, y: jump reload flash
+
+out DataVS {
+	vec4 v_anchor; // xyz: origin of the bar stack, w: 1 = draw
+	vec4 v_bar;    // x: row, y: progress
+	vec4 v_color;
+};
+
+void main()
+{
+	vec3 basePos = posHeight.xyz;
+	float drawn = 1.0;
+	if (distParams.z < 0.5) {
+		basePos = uni[instData.y].drawPos.xyz;
+		// drawFlag: only units drawn as a model (not as an icon) in the main view, like Spring.GetVisibleUnits(-1, nil, false)
+		if ((uni[instData.y].composite & 0x00000003u) == 0u) {
+			drawn = 0.0;
+		}
+	}
+
+	vec3 toCamera = basePos - cameraViewInv[3].xyz;
+	float distSq = dot(toCamera, toCamera);
+	if ((distSq > distParams.x) || (distSq < distParams.y)) {
+		drawn = 0.0;
+	}
+
+	float row = floor((barInfo.x + 0.5) * 0.25);
+	float kind = barInfo.x - row * 4.0;
+	float progress = barInfo.y + barInfo.z * (barInfo.w - timeInfo.x);
+
+	vec4 color = color1;
+	if (kind > 0.5) {
+		float flash = (kind > 1.5) ? blinkParams.y : blinkParams.x;
+		if (flash > 0.5) {
+			color = color2;
+		}
+	}
+
+	v_anchor = vec4(basePos.x, basePos.y + posHeight.w, basePos.z, drawn);
+	v_bar = vec4(row, progress, 0.0, 0.0);
+	v_color = color;
+	gl_Position = vec4(basePos, 1.0);
+}
+]==]
+
+	local gsSrc = [==[
+#version 330
+#extension GL_ARB_uniform_buffer_object : require
+#extension GL_ARB_shading_language_420pack: require
+
+//__ENGINEUNIFORMBUFFERDEFS__
+//__DEFINES__
+layout(points) in;
+layout(triangle_strip, max_vertices = 8) out;
+#line 20000
+
+uniform vec4 barDims;    // x: half bar width, y: bar height, z: row step, w: bar scale
+uniform vec4 bgTop;
+uniform vec4 bgBottom;
+uniform vec4 distParams; // w: 1 = always draw the background
+
+in DataVS {
+	vec4 v_anchor;
+	vec4 v_bar;
+	vec4 v_color;
+} dataIn[];
+
+out DataGS {
+	vec4 g_color;
+};
+
+vec3 anchorPos;
+vec3 rightVec;
+vec3 upVec;
+
+// x, y as in the immediate mode path: in the billboarded, barScale scaled frame
+void EmitCorner(float x, float y, vec4 color)
+{
+	g_color = color;
+	gl_Position = cameraViewProj * vec4(anchorPos + rightVec * x + upVec * y, 1.0);
+	EmitVertex();
+}
+
+void main()
+{
+	if (dataIn[0].v_anchor.w < 0.5) {
+		return;
+	}
+	anchorPos = dataIn[0].v_anchor.xyz;
+	// gl.Billboard: camera right/up axes
+	rightVec = cameraViewInv[0].xyz * barDims.w;
+	upVec = cameraViewInv[1].xyz * barDims.w;
+
+	float halfWidth = barDims.x;
+	float bottom = -dataIn[0].v_bar.x * barDims.z;
+	float top = bottom + barDims.y;
+	float progress = dataIn[0].v_bar.y;
+	float progressPos = -halfWidth + halfWidth * 2.0 * progress;
+
+	// Background first, then the progress gradient (bright top). Fixed function
+	// clamps vertex colours, so clamp before interpolation as well.
+	if ((distParams.w > 0.5) || (progress < 1.0)) {
+		vec4 bgB = clamp(bgBottom, 0.0, 1.0);
+		vec4 bgT = clamp(bgTop, 0.0, 1.0);
+		EmitCorner(halfWidth, bottom, bgB);
+		EmitCorner(halfWidth, top, bgT);
+		EmitCorner(progressPos, bottom, bgB);
+		EmitCorner(progressPos, top, bgT);
+		EndPrimitive();
+	}
+
+	vec4 barColor = clamp(dataIn[0].v_color, 0.0, 1.0);
+	vec4 brightColor = vec4(clamp(dataIn[0].v_color.rgb * 1.5, 0.0, 1.0), barColor.a);
+	EmitCorner(progressPos, bottom, barColor);
+	EmitCorner(progressPos, top, brightColor);
+	EmitCorner(-halfWidth, bottom, barColor);
+	EmitCorner(-halfWidth, top, brightColor);
+	EndPrimitive();
+}
+]==]
+
+	local fsSrc = [==[
+#version 330
+#extension GL_ARB_uniform_buffer_object : require
+#extension GL_ARB_shading_language_420pack: require
+
+#line 30000
+
+in DataGS {
+	vec4 g_color;
+};
+
+out vec4 fragColor;
+
+void main(void)
+{
+	fragColor = g_color;
+}
+]==]
+
+	local shaderCache = {
+		vsSrc = vsSrc,
+		gsSrc = gsSrc,
+		fsSrc = fsSrc,
+		shaderName = "HealthBars GL4",
+		uniformInt = {},
+		uniformFloat = {},
+		shaderConfig = {},
+		forceupdate = true,
+	}
+
+	local shader
+	local locBarDims, locBgTop, locBgBottom, locDist, locBlink
+	local unitBuf, featBuf
+	local scratchVBO
+	local scratchCap = 0
+	local unitRowStep, featureRowStep = barDrawer.GetRowSteps()
+	-- One dummy vertex (and index): the bar VBO is the instance buffer and every
+	-- instance draws that single point. (LuaVAOImpl only keeps its GL VAO between
+	-- draws when vertex, index and instance buffers are all attached.)
+	local dummyVertVBO, dummyIndexVBO
+
+	----------------------------------------------------------------------------
+	-- Bar buffers: a VBO, its VAO and a Lua copy of the contents. Elements are
+	-- packed (0 .. used-1); removing one moves the last element into the hole.
+
+	local function NewBarVAO(vbo)
+		local vao = gl.GetVAO()
+		if not vao then
+			return nil
+		end
+		vao:AttachVertexBuffer(dummyVertVBO)
+		vao:AttachInstanceBuffer(vbo)
+		vao:AttachIndexBuffer(dummyIndexVBO)
+		return vao
+	end
+
+	local function NewBarBuffer(cap)
+		local vbo = gl.GetVBO(GL.ARRAY_BUFFER, true)
+		if not vbo then
+			return nil
+		end
+		vbo:Define(cap, BAR_LAYOUT)
+		local vao = NewBarVAO(vbo)
+		if not vao then
+			vbo:Delete()
+			return nil
+		end
+		local data = {}
+		for i = 1, cap*STEP do
+			data[i] = 0
+		end
+		return {
+			vbo = vbo,
+			vao = vao,
+			cap = cap,
+			used = 0,
+			data = data,   -- copy of the VBO contents, no holes (Upload needs #data)
+			owner = {},    -- element -> unitID / featureID
+			ownerBar = {}, -- element -> bar index within its owner
+			-- element -> colour tables its colour floats were copied from. The colour tables
+			-- (barColors, bfcolormap, ...) are never modified, so while the bar still uses the
+			-- same table its floats in data are still equal and need no comparison.
+			c1ref = {},
+			c2ref = {},
+			inst = {},     -- owner -> {element of bar 1, element of bar 2, ...}
+			count = {},    -- owner -> number of bars
+			dirty = {},    -- elements to upload
+			dirtyN = 0,
+		}
+	end
+
+	local function ClearDirty(buf)
+		local dirty = buf.dirty
+		for i = 1, buf.dirtyN do
+			dirty[i] = nil
+		end
+		buf.dirtyN = 0
+	end
+
+	local function ClearBarBuffer(buf)
+		buf.used = 0
+		buf.owner = {}
+		buf.ownerBar = {}
+		buf.c1ref = {}
+		buf.c2ref = {}
+		buf.inst = {}
+		buf.count = {}
+		ClearDirty(buf)
+	end
+
+	local function DeleteBarBuffer(buf)
+		buf.vao:Delete()
+		buf.vbo:Delete()
+	end
+
+	local function GrowBarBuffer(buf, need)
+		local cap = buf.cap
+		while cap < need do
+			cap = cap*2
+		end
+		local vbo = gl.GetVBO(GL.ARRAY_BUFFER, true)
+		vbo:Define(cap, BAR_LAYOUT)
+		local vao = NewBarVAO(vbo)
+		local data = buf.data
+		for i = buf.cap*STEP + 1, cap*STEP do
+			data[i] = 0
+		end
+		if buf.used > 0 then
+			vbo:Upload(data, nil, 0, 1, buf.used*STEP)
+		end
+		DeleteBarBuffer(buf)
+		buf.vbo, buf.vao, buf.cap = vbo, vao, cap
+		ClearDirty(buf) -- all used elements were just uploaded
+	end
+
+	local function MarkDirty(buf, e)
+		local n = buf.dirtyN + 1
+		buf.dirtyN = n
+		buf.dirty[n] = e
+	end
+
+	local function RemoveElement(buf, e)
+		local last = buf.used - 1
+		if e ~= last then
+			local data = buf.data
+			local dst, src = e*STEP, last*STEP
+			for i = 1, STEP do
+				data[dst + i] = data[src + i]
+			end
+			local key, bar = buf.owner[last], buf.ownerBar[last]
+			buf.owner[e] = key
+			buf.ownerBar[e] = bar
+			buf.c1ref[e] = buf.c1ref[last]
+			buf.c2ref[e] = buf.c2ref[last]
+			buf.inst[key][bar] = e
+			MarkDirty(buf, e)
+		end
+		buf.owner[last] = nil
+		buf.ownerBar[last] = nil
+		buf.c1ref[last] = nil
+		buf.c2ref[last] = nil
+		buf.used = last
+	end
+
+	-- Writes the n gathered bars of one owner (unit or feature) into its elements,
+	-- adding/removing elements when the bar count changed, and marks the elements
+	-- whose contents changed for upload. px == nil: the position floats are always 0
+	-- (unit buffer), nothing to compare.
+	local function CommitBars(buf, key, bars, n, px, py, pz, height, idata)
+		local inst = buf.inst[key]
+		local old = buf.count[key] or 0
+		if n > 0 and not inst then
+			inst = {}
+			buf.inst[key] = inst
+		end
+		local data = buf.data
+		local c1ref, c2ref = buf.c1ref, buf.c2ref
+		for i = 1, n do
+			local b = bars[i]
+			local e = inst[i]
+			local changed = false
+			local o
+			if not e then
+				e = buf.used
+				if e >= buf.cap then
+					GrowBarBuffer(buf, e + 1)
+				end
+				buf.used = e + 1
+				buf.owner[e] = key
+				buf.ownerBar[e] = i
+				inst[i] = e
+				o = e*STEP
+				if idata then
+					data[o + 17], data[o + 18], data[o + 19], data[o + 20] = idata[1], idata[2], idata[3], idata[4]
+				else
+					data[o + 17], data[o + 18], data[o + 19], data[o + 20] = 0, 0, 0, 0
+				end
+				changed = true
+			else
+				o = e*STEP
+			end
+
+			if px then
+				if data[o + 1] ~= px then data[o + 1] = px; changed = true end
+				if data[o + 2] ~= py then data[o + 2] = py; changed = true end
+				if data[o + 3] ~= pz then data[o + 3] = pz; changed = true end
+			end
+			if data[o + 4] ~= height then data[o + 4] = height; changed = true end
+			local v = (i - 1)*4 + b.kind
+			if data[o + 5] ~= v then data[o + 5] = v; changed = true end
+			v = b.pa
+			if data[o + 6] ~= v then data[o + 6] = v; changed = true end
+			v = b.pb
+			if data[o + 7] ~= v then data[o + 7] = v; changed = true end
+			v = b.pend
+			if data[o + 8] ~= v then data[o + 8] = v; changed = true end
+			local c = b.c1
+			if c1ref[e] ~= c then
+				c1ref[e] = c
+				if data[o + 9]  ~= c[1] then data[o + 9]  = c[1]; changed = true end
+				if data[o + 10] ~= c[2] then data[o + 10] = c[2]; changed = true end
+				if data[o + 11] ~= c[3] then data[o + 11] = c[3]; changed = true end
+				if data[o + 12] ~= c[4] then data[o + 12] = c[4]; changed = true end
+			end
+			c = b.c2
+			if c2ref[e] ~= c then
+				c2ref[e] = c
+				if data[o + 13] ~= c[1] then data[o + 13] = c[1]; changed = true end
+				if data[o + 14] ~= c[2] then data[o + 14] = c[2]; changed = true end
+				if data[o + 15] ~= c[3] then data[o + 15] = c[3]; changed = true end
+				if data[o + 16] ~= c[4] then data[o + 16] = c[4]; changed = true end
+			end
+
+			if changed then
+				MarkDirty(buf, e)
+			end
+		end
+		for i = old, n + 1, -1 do
+			RemoveElement(buf, inst[i])
+			inst[i] = nil
+		end
+		if n > 0 then
+			buf.count[key] = n
+		else
+			buf.inst[key] = nil
+			buf.count[key] = nil
+		end
+	end
+
+	-- Uploads the changed elements, merging nearby ones into one call.
+	local function FlushBarBuffer(buf)
+		local n = buf.dirtyN
+		if n == 0 then
+			return
+		end
+		local dirty, used, vbo, data = buf.dirty, buf.used, buf.vbo, buf.data
+		if n > 1 then
+			tsort(dirty)
+		end
+		local runStart, runEnd = -1, -1
+		for i = 1, n do
+			local e = dirty[i]
+			dirty[i] = nil
+			if e < used then
+				if runStart >= 0 and e <= runEnd + 4 then
+					if e > runEnd then
+						runEnd = e
+					end
+				else
+					if runStart >= 0 then
+						vbo:Upload(data, nil, runStart, runStart*STEP + 1, (runEnd + 1)*STEP)
+					end
+					runStart, runEnd = e, e
+				end
+			end
+		end
+		if runStart >= 0 then
+			vbo:Upload(data, nil, runStart, runStart*STEP + 1, (runEnd + 1)*STEP)
+		end
+		buf.dirtyN = 0
+	end
+
+	----------------------------------------------------------------------------
+	-- Units
+
+	local trackStamp   = {} -- unitID -> stamp of the last visible unit list that contained it
+	local trackedCount = 0  -- number of keys in trackStamp
+	local unitInstData = {} -- unitID -> engine instance data {matrix offset, uniform index, info, bpose offset}
+	local legacyUnits  = {} -- unitID -> unitDefID: drawn by the immediate mode path (stockpile icon)
+	local lastEval     = {} -- unitID -> unitPass of its last evaluation
+	local newUnits     = {}
+	local unitStamp    = 0
+	local unitPass     = 0
+	local lastUnitList, lastUnitFrame
+
+	local fetchArg
+	local function ScratchInstanceData()
+		scratchVBO:InstanceDataFromUnitIDs(fetchArg, 0, 0)
+	end
+
+	-- Fetches the engine instance data (uniform index etc.) of new units: one
+	-- InstanceDataFromUnitIDs into a scratch VBO and one Download for all of them.
+	local function FetchInstData(ids, n)
+		if n > scratchCap then
+			local cap = (scratchCap > 0 and scratchCap) or 64
+			while cap < n do
+				cap = cap*2
+			end
+			local vbo = gl.GetVBO(GL.ARRAY_BUFFER, false)
+			if not vbo then
+				error("could not allocate HealthBars instance-data buffer")
+			end
+			vbo:Define(cap, INSTDATA_LAYOUT)
+			if scratchVBO then
+				scratchVBO:Delete()
+			end
+			scratchVBO, scratchCap = vbo, cap
+		end
+		fetchArg = ids
+		if pcall(ScratchInstanceData) then
+			local t = scratchVBO:Download(0, 0, n)
+			for i = 1, n do
+				local o = (i - 1)*4
+				unitInstData[ids[i]] = {t[o + 1], t[o + 2], t[o + 3], t[o + 4]}
+			end
+		else
+			-- a unit is gone already: one at a time
+			for i = 1, n do
+				local unitID = ids[i]
+				fetchArg = unitID
+				if pcall(ScratchInstanceData) then
+					local t = scratchVBO:Download(0, 0, 1)
+					unitInstData[unitID] = {t[1], t[2], t[3], t[4]}
+				end
+			end
+		end
+		fetchArg = nil
+	end
+
+	function UntrackUnitGL4(unitID)
+		if unitBuf and unitBuf.count[unitID] then
+			CommitBars(unitBuf, unitID, nil, 0)
+		end
+		if trackStamp[unitID] then
+			trackStamp[unitID] = nil
+			trackedCount = trackedCount - 1
+		end
+		unitInstData[unitID] = nil
+		legacyUnits[unitID] = nil
+		lastEval[unitID] = nil
+	end
+
+	local function EvalUnit(unitID)
+		lastEval[unitID] = unitPass
+		local unitDefID = spGetUnitDefID(unitID)
+		if not unitDefID then
+			UntrackUnitGL4(unitID)
+			return
+		end
+		local bars, n, height
+		local ci
+		if spGetUnitRulesParam(unitID, "no_healthbar") then
+			legacyUnits[unitID] = nil
+			n = 0
+		else
+			ci = GetUnitCustomInfo(unitDefID)
+			if ci.canStockpile then
+				-- stockpile icon and count: drawn by the immediate mode path every frame
+				legacyUnits[unitID] = unitDefID
+				n = 0
+			else
+				legacyUnits[unitID] = nil
+				bars, n, height = GatherUnitBarsGL4(unitID, unitDefID, ci)
+			end
+		end
+		if n > 0 or unitBuf.count[unitID] then
+			CommitBars(unitBuf, unitID, bars, n, nil, nil, nil, height, unitInstData[unitID])
+		end
+	end
+
+	-- list: Spring.GetVisibleUnits(-1, nil, false) of this frame (a new table whenever
+	-- it was refreshed, see LuaUI/cache.lua)
+	local EMPTY = {}
+
+	local function UnitPass(list, frame)
+		list = list or EMPTY
+		local listChanged = (list ~= lastUnitList)
+		local frameAdvanced = (frame ~= lastUnitFrame)
+		local full = gl4ForceFullUnits
+		if not (listChanged or frameAdvanced or full) then
+			return
+		end
+		lastUnitList, lastUnitFrame = list, frame
+		gl4ForceFullUnits = false
+		unitPass = unitPass + 1
+
+		local doEval = frameAdvanced or full
+
+		if listChanged or full then
+			-- New list: stamp it, gather tracked units on the way, collect new ones.
+			unitStamp = unitStamp + 1
+			local stamp = unitStamp
+			local nNew = 0
+			for i = 1, #list do
+				local unitID = list[i]
+				if trackStamp[unitID] then
+					trackStamp[unitID] = stamp
+					if doEval and lastEval[unitID] ~= unitPass then
+						EvalUnit(unitID)
+					end
+				else
+					trackStamp[unitID] = stamp
+					trackedCount = trackedCount + 1
+					nNew = nNew + 1
+					newUnits[nNew] = unitID
+				end
+			end
+			-- Units that left the list (only possible if more are tracked than listed).
+			if trackedCount > #list then
+				for unitID, s in pairs(trackStamp) do
+					if s ~= stamp then
+						UntrackUnitGL4(unitID)
+					end
+				end
+			end
+			if nNew > 0 then
+				FetchInstData(newUnits, nNew)
+				for i = 1, nNew do
+					local unitID = newUnits[i]
+					newUnits[i] = nil
+					if unitInstData[unitID] then
+						EvalUnit(unitID)
+					else
+						UntrackUnitGL4(unitID) -- retried with the next list
+					end
+				end
+			end
+		elseif doEval then
+			for i = 1, #list do
+				local unitID = list[i]
+				if trackStamp[unitID] and lastEval[unitID] ~= unitPass then
+					EvalUnit(unitID)
+				end
+			end
+		end
+
+		FlushBarBuffer(unitBuf)
+	end
+
+	----------------------------------------------------------------------------
+	-- Features
+
+	local featStamp    = {} -- featureID -> stamp of the last feature list that contained it
+	local featEntry    = {} -- featureID -> its {x, y, z, featureID, featureDefID} entry in that list
+	local featLastEval = {} -- featureID -> featurePass of its last evaluation
+	local newFeatures  = {}
+	local featureStamp = 0
+	local featurePass  = 0
+	local lastFeatureList, lastFeatureFrame
+
+	local function UntrackFeature(featureID)
+		if featBuf.count[featureID] then
+			CommitBars(featBuf, featureID, nil, 0)
+		end
+		featStamp[featureID] = nil
+		featEntry[featureID] = nil
+		featLastEval[featureID] = nil
+	end
+
+	local function EvalFeature(featureID)
+		featLastEval[featureID] = featurePass
+		if not spValidFeatureID(featureID) then
+			UntrackFeature(featureID)
+			return
+		end
+		local entry = featEntry[featureID]
+		local bars, n, height = GatherFeatureBarsGL4(featureID, entry[5])
+		if n > 0 or featBuf.count[featureID] then
+			CommitBars(featBuf, featureID, bars, n, entry[1], entry[2], entry[3], height, nil)
+		end
+	end
+
+	-- list: visibleFeatures, refreshed (as a new table) every 1/3 s by widget:Update
+	local function FeaturePass(list, frame)
+		list = list or EMPTY
+		local listChanged = (list ~= lastFeatureList)
+		local frameAdvanced = (frame ~= lastFeatureFrame)
+		local full = gl4ForceFullFeatures
+		if not (listChanged or frameAdvanced or full) then
+			return
+		end
+		lastFeatureList, lastFeatureFrame = list, frame
+		gl4ForceFullFeatures = false
+		featurePass = featurePass + 1
+
+		if listChanged or full then
+			featureStamp = featureStamp + 1
+			local stamp = featureStamp
+			local nNew = 0
+			for i = 1, #list do
+				local entry = list[i]
+				local featureID = entry[4]
+				if not featStamp[featureID] then
+					nNew = nNew + 1
+					newFeatures[nNew] = featureID
+				end
+				featStamp[featureID] = stamp
+				featEntry[featureID] = entry
+			end
+			for featureID, s in pairs(featStamp) do
+				if s ~= stamp then
+					UntrackFeature(featureID)
+				end
+			end
+			for i = 1, nNew do
+				local featureID = newFeatures[i]
+				newFeatures[i] = nil
+				EvalFeature(featureID)
+			end
+		end
+
+		-- a refreshed list can move features with bars (new positions)
+		local evalAll = frameAdvanced or full
+		if evalAll or listChanged then
+			local count = featBuf.count
+			for i = 1, #list do
+				local featureID = list[i][4]
+				if featStamp[featureID] and featLastEval[featureID] ~= featurePass and (evalAll or count[featureID]) then
+					EvalFeature(featureID)
+				end
+			end
+		end
+
+		FlushBarBuffer(featBuf)
+	end
+
+	----------------------------------------------------------------------------
+	-- Drawing
+
+	-- Squared distance below which units/features show text and are therefore drawn
+	-- by the immediate mode path.
+	local function UnitNearSq()
+		local sq = healthbarTitleSq
+		if drawBarPercentages and healthbarPercentSq > sq then
+			sq = healthbarPercentSq
+		end
+		return sq
+	end
+
+	local function FeatureNearSq()
+		local sq = featureTitleSq
+		if drawBarPercentages and featurePercentSq > sq then
+			sq = featurePercentSq
+		end
+		return sq
+	end
+
+	-- The packed buffer changes order when bars disappear. Restore visible-list
+	-- order before drawing: alpha blending makes overlapping bars order-sensitive.
+	local function OrderBarBuffer(buf, list, features)
+		local nextElement = 0
+		for i = 1, #list do
+			local id = features and list[i][4] or list[i]
+			local inst = buf.inst[id]
+			for bar = 1, buf.count[id] or 0 do
+				local old = inst[bar]
+				if old ~= nextElement then
+					local otherID, otherBar = buf.owner[nextElement], buf.ownerBar[nextElement]
+					local a, b = old*STEP, nextElement*STEP
+					for k = 1, STEP do
+						buf.data[a+k], buf.data[b+k] = buf.data[b+k], buf.data[a+k]
+					end
+					buf.owner[old], buf.ownerBar[old] = otherID, otherBar
+					buf.owner[nextElement], buf.ownerBar[nextElement] = id, bar
+					buf.inst[otherID][otherBar], inst[bar] = old, nextElement
+					buf.c1ref[old], buf.c1ref[nextElement] = buf.c1ref[nextElement], buf.c1ref[old]
+					buf.c2ref[old], buf.c2ref[nextElement] = buf.c2ref[nextElement], buf.c2ref[old]
+					MarkDirty(buf, old)
+					MarkDirty(buf, nextElement)
+				end
+				nextElement = nextElement + 1
+			end
+		end
+	end
+
+	local function DrawRange(buf, first, count, features)
+		if count == 0 then return end
+		shader:Activate()
+		glUniform(locBlink, (blink and 1) or 0, (blink_j and 1) or 0, 0, 0)
+		if features then
+			glUniform(locBarDims, featureBarWidth, featureBarHeight, featureRowStep, barScale)
+			glUniform(locBgTop, fbkTop[1], fbkTop[2], fbkTop[3], fbkTop[4])
+			glUniform(locBgBottom, fbkBottom[1], fbkBottom[2], fbkBottom[3], fbkBottom[4])
+			glUniform(locDist, featureDistSq, 0, 1, 1)
+		else
+			glUniform(locBarDims, barWidth, barHeight, unitRowStep, barScale)
+			glUniform(locBgTop, bkTop[1], bkTop[2], bkTop[3], bkTop[4])
+			glUniform(locBgBottom, bkBottom[1], bkBottom[2], bkBottom[3], bkBottom[4])
+			glUniform(locDist, healthbarDistSq, 0, 0, 0)
+		end
+		buf.vao:DrawArrays(GL_POINTS, 1, 0, count, first)
+		shader:Deactivate()
+	end
+
+	function DrawWorldGL4()
+		if not Spring.IsGUIHidden() then
+			if (#visibleUnits + #visibleFeatures == 0) or not camBelowMaxHeight then return end
+			if WG.Cutscene and WG.Cutscene.IsInCutscene() then return end
+			glDepthMask(true)
+			cx, cy, cz = spGetCameraPosition()
+			OrderBarBuffer(unitBuf, visibleUnits, false)
+			OrderBarBuffer(featBuf, visibleFeatures, true)
+			FlushBarBuffer(unitBuf)
+			FlushBarBuffer(featBuf)
+
+			local nearSq = UnitNearSq()
+			local first, count = 0, 0
+			for i = 1, #visibleUnits do
+				local id = visibleUnits[i]
+				local x, y, z = Spring.GetUnitViewPosition(id)
+				local n = unitBuf.count[id] or 0
+				local immediate = legacyUnits[id]
+				if x then
+					local dx, dy, dz = x-cx, y-cy, z-cz
+					if dx*dx+dy*dy+dz*dz < nearSq then immediate = true end
+				end
+				if x and not immediate and n > 0 then
+					local offset = unitBuf.inst[id][1]
+					if count > 0 and offset ~= first+count then
+						DrawRange(unitBuf, first, count, false); count = 0
+					end
+					if count == 0 then first = offset end
+					count = count + n
+				elseif immediate and x then
+					DrawRange(unitBuf, first, count, false); count = 0
+					local defID = spGetUnitDefID(id)
+					if defID and not spGetUnitRulesParam(id, "no_healthbar") then
+						DrawUnitInfos(id, defID)
+					end
+				end
+			end
+			DrawRange(unitBuf, first, count, false)
+
+			nearSq = FeatureNearSq()
+			first, count = 0, 0
+			for i = 1, #visibleFeatures do
+				local entry = visibleFeatures[i]
+				local id = entry[4]
+				local dx, dy, dz = entry[1]-cx, entry[2]-cy, entry[3]-cz
+				local dist = dx*dx+dy*dy+dz*dz
+				local n = featBuf.count[id] or 0
+				if spValidFeatureID(id) and dist < featureDistSq then
+					if dist < nearSq then
+						DrawRange(featBuf, first, count, true); count = 0
+						addTitle = dist < featureTitleSq
+						addPercent = dist < featurePercentSq
+						DrawFeatureInfos(id, entry[5], entry[1], entry[2], entry[3])
+					elseif n > 0 then
+						local offset = featBuf.inst[id][1]
+						if count > 0 and offset ~= first+count then
+							DrawRange(featBuf, first, count, true); count = 0
+						end
+						if count == 0 then first = offset end
+						count = count + n
+					end
+				end
+			end
+			DrawRange(featBuf, first, count, true)
+		end
+		glDepthMask(false)
+		glMultiTexCoord(1, 1, 1, 1)
+		glColor(1, 1, 1, 1)
+	end
+
+	----------------------------------------------------------------------------
+	-- Setup
+
+	function ResetGL4()
+		gl4Gather = false
+		barDrawer.TakeBars()
+		trackStamp, unitInstData, legacyUnits, lastEval = {}, {}, {}, {}
+		trackedCount = 0
+		featStamp, featEntry, featLastEval = {}, {}, {}
+		if unitBuf then
+			ClearBarBuffer(unitBuf)
+		end
+		if featBuf then
+			ClearBarBuffer(featBuf)
+		end
+		lastUnitList, lastUnitFrame = nil, nil
+		lastFeatureList, lastFeatureFrame = nil, nil
+		gl4ForceFullUnits = true
+		gl4ForceFullFeatures = true
+	end
+
+	function ShutdownGL4()
+		ResetGL4()
+		if unitBuf then
+			DeleteBarBuffer(unitBuf)
+			unitBuf = nil
+		end
+		if featBuf then
+			DeleteBarBuffer(featBuf)
+			featBuf = nil
+		end
+		if scratchVBO then
+			scratchVBO:Delete()
+			scratchVBO = nil
+			scratchCap = 0
+		end
+		if dummyVertVBO then
+			dummyVertVBO:Delete()
+			dummyVertVBO = nil
+		end
+		if dummyIndexVBO then
+			dummyIndexVBO:Delete()
+			dummyIndexVBO = nil
+		end
+		if shader then
+			shader:Delete()
+			shader = nil
+		end
+	end
+
+	local function InitGL4Resources()
+		-- Without engine GL4 (e.g. ForceDisableGL4, safe mode) the per-unit uniform
+		-- buffer the shader reads unit positions from is never bound.
+		if not (Platform and Platform.glHaveGL4) then
+			return false
+		end
+		if not (gl.CreateShader and gl.GetVBO and gl.GetVAO and gl.Uniform and gl.GetUniformLocation) then
+			return false
+		end
+		LuaShader = LuaShader or VFS.Include("LuaUI/Widgets/Include/LuaShader.lua")
+		shaderCache.forceupdate = true
+		shader = LuaShader.CheckShaderUpdates(shaderCache)
+		if not shader then
+			return false
+		end
+		local shaderObj = shader:GetHandle()
+		locBarDims  = gl.GetUniformLocation(shaderObj, "barDims") or -1
+		locBgTop    = gl.GetUniformLocation(shaderObj, "bgTop") or -1
+		locBgBottom = gl.GetUniformLocation(shaderObj, "bgBottom") or -1
+		locDist     = gl.GetUniformLocation(shaderObj, "distParams") or -1
+		locBlink    = gl.GetUniformLocation(shaderObj, "blinkParams") or -1
+		dummyVertVBO = gl.GetVBO(GL.ARRAY_BUFFER, false)
+		dummyIndexVBO = gl.GetVBO(GL.ELEMENT_ARRAY_BUFFER, false)
+		if not (dummyVertVBO and dummyIndexVBO) then
+			return false
+		end
+		dummyVertVBO:Define(1, {{id = 5, name = "unused", size = 1}})
+		dummyVertVBO:Upload({0})
+		dummyIndexVBO:Define(1)
+		dummyIndexVBO:Upload({0})
+		unitBuf = NewBarBuffer(512)
+		featBuf = NewBarBuffer(128)
+		return (unitBuf and featBuf) and true or false
+	end
+
+	function InitGL4()
+		local ok, res = pcall(InitGL4Resources)
+		if ok and res then
+			ResetGL4()
+			Spring.Echo("HealthBars: GL4 renderer initialized")
+			return true
+		end
+		Spring.Echo("HealthBars: GL4 path unavailable, using immediate mode", (not ok) and tostring(res) or "")
+		pcall(ShutdownGL4)
+		return false
+	end
+
+	function UpdateGL4()
+		UnitPass(visibleUnits, gameFrame)
+		FeaturePass(visibleFeatures, gameFrame)
+	end
+end
+
 
 do
 	local ALL_UNITS            = Spring.ALL_UNITS
@@ -1498,6 +2642,9 @@ do
 
 	function widget:DrawWorld()
 		gatherOverlays = not WG.DrawParalyzedUnitGL4
+		if gl4Active and not gatherOverlays then
+			return DrawWorldGL4()
+		end
 		if not Spring.IsGUIHidden() then
 			if (#visibleUnits + #visibleFeatures == 0) then
 				return
@@ -1601,11 +2748,15 @@ do
 	local sec2 = 0
 
 	function widget:Update(dt)
-
 		-- Test camera height before processing
 		if not IsCameraBelowMaxHeight() then
+			camBelowMaxHeight = false
+			-- no GL4 passes meanwhile: gather everything when coming back
+			gl4ForceFullUnits = true
+			gl4ForceFullFeatures = true
 			return false
 		end
+		camBelowMaxHeight = true
 		
 		local _, activeCmdID = Spring.GetActiveCommand()
 		-- Processing
@@ -1638,6 +2789,23 @@ do
 			end
 		end
 
+		if gl4Ready then
+			gatherOverlays = not WG.DrawParalyzedUnitGL4
+			if (not gatherOverlays) and (not deactivated) then
+				if not gl4Active then Spring.Echo("HealthBars: GL4 renderer active") end
+				gl4Active = true
+				local ok, err = pcall(UpdateGL4)
+				if not ok then
+					Spring.Echo("HealthBars: GL4 update failed, using immediate mode", tostring(err))
+					pcall(ShutdownGL4)
+					gl4Ready, gl4Active = false, false
+				end
+			elseif gl4Active then
+				-- the immediate mode path draws; start from scratch when coming back
+				gl4Active = false
+				ResetGL4()
+			end
+		end
 	end
 
 end --//end do
