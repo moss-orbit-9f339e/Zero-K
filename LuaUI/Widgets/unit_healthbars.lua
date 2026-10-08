@@ -936,7 +936,7 @@ do
 		local emp = (paralyzeDamage or 0)/empHP
 		local hp  = (health or 0)/maxHealth
 
-		if Spring.GetUnitIsDead(unitID) then
+		if (drawFullHealthBars or hp < 1) and Spring.GetUnitIsDead(unitID) then
 			health = false
 		end
 
@@ -1058,7 +1058,7 @@ do
 		
 		--// Teleport progress
 		local TeleportEnd = GetUnitRulesParam(unitID, "teleportend")
-		local TeleportCost = GetUnitRulesParam(unitID, "teleportcost")
+		local TeleportCost = TeleportEnd and GetUnitRulesParam(unitID, "teleportcost")
 		if TeleportEnd and TeleportCost and TeleportEnd >= 0 then
 			local prog
 			if TeleportEnd > 1 then
