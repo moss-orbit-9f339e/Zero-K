@@ -258,26 +258,47 @@ end
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 --
---  array-table reverse iterator
+--  array-table reverse iteration
 --
---  all callin handlers use this so that gadgets can
---  RemoveGadget() themselves (during iteration over
---  a callin list) without causing a miscount
+--  all callin handlers walk their callin list backwards so
+--  that gadgets can RemoveGadget() themselves (during
+--  iteration over a callin list) without causing a miscount
 --
 --  c.f. Array{Insert,Remove}
 --
+--  The handlers used to do this with a reverse ipairs iterator,
+--  "for _,g in r_ipairs(list)", which called a Lua function per
+--  gadget. They now use the equivalent numeric loop
+--
+--    local gList = list
+--    for gIdx = #gList, 1, -1 do
+--      local g = gList[gIdx]
+--
+--  Both read the list once, take #list once at the start, visit
+--  indices #list..1 and read list[index] when that step begins.
+--
 
-local function r_iter(tbl, key)
-	if (key <= 1) then
-		return nil
+--------------------------------------------------------------------------------
+--
+--  profiler zone names
+--
+--  ZN[prefix][gadget] is prefix .. gadget.ghInfo.name, built on first use
+--  instead of concatenating a new string for every gadget on every call.
+--
+
+local ZN = setmetatable({}, {
+	__index = function(cache, prefix)
+		local names = setmetatable({}, {
+			__index = function(names, g)
+				local name = prefix .. g.ghInfo.name
+				names[g] = name
+				return name
+			end
+		})
+		cache[prefix] = names
+		return names
 	end
-	-- next idx, next val
-	return (key - 1), tbl[key - 1]
-end
-
-local function r_ipairs(tbl)
-	return r_iter, tbl, (1 + #tbl)
-end
+})
 
 
 --------------------------------------------------------------------------------
@@ -958,8 +979,10 @@ end
 
 function gadgetHandler:GamePreload()
 	tracy.ZoneBeginN("G:GameFrame")
-	for _,g in r_ipairs(self.GamePreloadList) do
-		tracy.ZoneBeginN("G:GameFrame:" .. g.ghInfo.name)
+	local gList = self.GamePreloadList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:GameFrame:"][g])
 		g:GamePreload()
 		tracy.ZoneEnd()
 	end
@@ -969,8 +992,10 @@ end
 
 function gadgetHandler:GameStart()
 	tracy.ZoneBeginN("G:GameStart")
-	for _,g in r_ipairs(self.GameStartList) do
-		tracy.ZoneBeginN("G:GameStart:" .. g.ghInfo.name)
+	local gList = self.GameStartList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:GameStart:"][g])
 		g:GameStart()
 		tracy.ZoneEnd()
 	end
@@ -980,8 +1005,10 @@ end
 
 function gadgetHandler:GamePaused(playerID, paused)
 	tracy.ZoneBeginN("G:GamePaused")
-	for _,g in r_ipairs(self.GamePausedList) do
-		tracy.ZoneBeginN("G:GamePaused:" .. g.ghInfo.name)
+	local gList = self.GamePausedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:GamePaused:"][g])
 		g:GamePaused(playerID, paused)
 		tracy.ZoneEnd()
 	end
@@ -992,10 +1019,12 @@ end
 function gadgetHandler:Shutdown()
 	tracy.ZoneBeginN("G:Shutdown")
 	Spring.Echo("Start gadgetHandler:Shutdown")
-	for _,g in r_ipairs(self.ShutdownList) do
+	local gList = self.ShutdownList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
 		local name = g.ghInfo.name or "UNKNOWN NAME"
 		Spring.Echo("Shutdown - " .. name)
-		tracy.ZoneBeginN("G:Shutdown:" .. g.ghInfo.name)
+		tracy.ZoneBeginN(ZN["G:Shutdown:"][g])
 		g:Shutdown()
 		tracy.ZoneEnd()
 	end
@@ -1006,8 +1035,10 @@ end
 
 function gadgetHandler:GameFrame(frameNum)
 	tracy.ZoneBeginN("G:GameFrame")
-	for _,g in r_ipairs(self.GameFrameList) do
-		tracy.ZoneBeginN("G:GameFrame:" .. g.ghInfo.name)
+	local gList = self.GameFrameList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:GameFrame:"][g])
 		g:GameFrame(frameNum)
 		tracy.ZoneEnd()
 	end
@@ -1017,8 +1048,10 @@ end
 
 function gadgetHandler:RecvLuaMsg(msg, player)
 	tracy.ZoneBeginN("G:RecvLuaMsg")
-	for _,g in r_ipairs(self.RecvLuaMsgList) do
-		tracy.ZoneBeginN("G:RecvLuaMsg:" .. g.ghInfo.name)
+	local gList = self.RecvLuaMsgList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:RecvLuaMsg:"][g])
 		if (g:RecvLuaMsg(msg, player)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1037,8 +1070,10 @@ end
 
 function gadgetHandler:GameOver(winners)
 	tracy.ZoneBeginN("G:GameOver")
-	for _,g in r_ipairs(self.GameOverList) do
-		tracy.ZoneBeginN("G:GameOver:" .. g.ghInfo.name)
+	local gList = self.GameOverList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:GameOver:"][g])
 		g:GameOver(winners)
 		tracy.ZoneEnd()
 	end
@@ -1048,8 +1083,10 @@ end
 
 function gadgetHandler:GameID(gameID)
 	tracy.ZoneBeginN("G:GameID")
-	for _,g in r_ipairs(self.GameIDList) do
-		tracy.ZoneBeginN("G:GameID:" .. g.ghInfo.name)
+	local gList = self.GameIDList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:GameID:"][g])
 		g:GameID(gameID)
 		tracy.ZoneEnd()
 	end
@@ -1060,8 +1097,10 @@ end
 
 function gadgetHandler:TeamDied(teamID)
 	tracy.ZoneBeginN("G:TeamDied")
-	for _,g in r_ipairs(self.TeamDiedList) do
-		tracy.ZoneBeginN("G:TeamDied:" .. g.ghInfo.name)
+	local gList = self.TeamDiedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:TeamDied:"][g])
 		g:TeamDied(teamID)
 		tracy.ZoneEnd()
 	end
@@ -1071,8 +1110,10 @@ end
 
 function gadgetHandler:PlayerAdded(playerID)
 	tracy.ZoneBeginN("G:PlayerAdded")
-	for _,g in r_ipairs(self.PlayerAddedList) do
-		tracy.ZoneBeginN("G:PlayerAdded:" .. g.ghInfo.name)
+	local gList = self.PlayerAddedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:PlayerAdded:"][g])
 		g:PlayerAdded(playerID)
 		tracy.ZoneEnd()
 	end
@@ -1082,8 +1123,10 @@ end
 
 function gadgetHandler:PlayerChanged(playerID)
 	tracy.ZoneBeginN("G:PlayerChanged")
-	for _,g in r_ipairs(self.PlayerChangedList) do
-		tracy.ZoneBeginN("G:PlayerChanged:" .. g.ghInfo.name)
+	local gList = self.PlayerChangedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:PlayerChanged:"][g])
 		g:PlayerChanged(playerID)
 		tracy.ZoneEnd()
 	end
@@ -1093,8 +1136,10 @@ end
 
 function gadgetHandler:PlayerRemoved(playerID, reason)
 	tracy.ZoneBeginN("G:PlayerRemoved")
-	for _,g in r_ipairs(self.PlayerRemovedList) do
-		tracy.ZoneBeginN("G:PlayerRemoved:" .. g.ghInfo.name)
+	local gList = self.PlayerRemovedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:PlayerRemoved:"][g])
 		g:PlayerRemoved(playerID, reason)
 		tracy.ZoneEnd()
 	end
@@ -1110,8 +1155,10 @@ end
 
 function gadgetHandler:DrawUnit(unitID, drawMode)
 	tracy.ZoneBeginN("G:DrawUnit")
-	for _,g in r_ipairs(self.DrawUnitList) do
-		tracy.ZoneBeginN("G:DrawUnit:" .. g.ghInfo.name)
+	local gList = self.DrawUnitList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawUnit:"][g])
 		if (g:DrawUnit(unitID, drawMode)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1125,8 +1172,10 @@ end
 
 function gadgetHandler:DrawFeature(featureID, drawMode)
 	tracy.ZoneBeginN("G:DrawFeature")
-	for _,g in r_ipairs(self.DrawFeatureList) do
-		tracy.ZoneBeginN("G:DrawFeature:" .. g.ghInfo.name)
+	local gList = self.DrawFeatureList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawFeature:"][g])
 		if (g:DrawFeature(featureID, drawMode)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1140,8 +1189,10 @@ end
 
 function gadgetHandler:DrawShield(unitID, weaponID, drawMode)
 	tracy.ZoneBeginN("G:DrawShield")
-	for _,g in r_ipairs(self.DrawShieldList) do
-		tracy.ZoneBeginN("G:DrawShield:" .. g.ghInfo.name)
+	local gList = self.DrawShieldList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawShield:"][g])
 		if (g:DrawShield(unitID, weaponID, drawMode)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1155,8 +1206,10 @@ end
 
 function gadgetHandler:DrawProjectile(projectileID, drawMode)
 	tracy.ZoneBeginN("G:DrawProjectile")
-	for _,g in r_ipairs(self.DrawProjectileList) do
-		tracy.ZoneBeginN("G:DrawProjectile:" .. g.ghInfo.name)
+	local gList = self.DrawProjectileList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawProjectile:"][g])
 		if (g:DrawProjectile(projectileID, drawMode)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1170,8 +1223,10 @@ end
 
 function gadgetHandler:RecvSkirmishAIMessage(aiTeam, dataStr)
 	tracy.ZoneBeginN("G:RecvSkirmishAIMessage")
-	for _,g in r_ipairs(self.RecvSkirmishAIMessageList) do
-		tracy.ZoneBeginN("G:RecvSkirmishAIMessage:" .. g.ghInfo.name)
+	local gList = self.RecvSkirmishAIMessageList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:RecvSkirmishAIMessage:"][g])
 		local dataRet = g:RecvSkirmishAIMessage(aiTeam, dataStr)
 		tracy.ZoneEnd()
 		if (dataRet) then
@@ -1184,8 +1239,10 @@ end
 
 function gadgetHandler:ScriptFireWeapon(unitID, unitDefID, weaponNum)
 	tracy.ZoneBeginN("G:ScriptFireWeapon")
-	for _,g in r_ipairs(self.ScriptFireWeaponList) do
-		tracy.ZoneBeginN("G:ScriptFireWeapon:" .. g.ghInfo.name)
+	local gList = self.ScriptFireWeaponList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:ScriptFireWeapon:"][g])
 		g:ScriptFireWeapon(unitID, unitDefID, weaponNum)
 		tracy.ZoneEnd()
 	end
@@ -1194,8 +1251,10 @@ end
 
 function gadgetHandler:ScriptEndBurst(unitID, unitDefID, weaponNum)
 	tracy.ZoneBeginN("G:ScriptEndBurst")
-	for _,g in r_ipairs(self.ScriptEndBurstList) do
-		tracy.ZoneBeginN("G:ScriptEndBurst:" .. g.ghInfo.name)
+	local gList = self.ScriptEndBurstList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:ScriptEndBurst:"][g])
 		g:ScriptEndBurst(unitID, unitDefID, weaponNum)
 		tracy.ZoneEnd()
 	end
@@ -1204,8 +1263,10 @@ end
 
 function gadgetHandler:CommandFallback(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdOptions, cmdTag)
 	tracy.ZoneBeginN("G:CommandFallback")
-	for _,g in r_ipairs(self.CommandFallbackList) do
-		tracy.ZoneBeginN("G:CommandFallback:" .. g.ghInfo.name)
+	local gList = self.CommandFallbackList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:CommandFallback:"][g])
 		local used, remove = g:CommandFallback(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdOptions, cmdTag)
 		tracy.ZoneEnd()
 		if (used) then
@@ -1219,8 +1280,10 @@ end
 
 function gadgetHandler:AllowStartPosition(playerID, teamID, readyState, cx, cy, cz, rx, ry, rz)
 	tracy.ZoneBeginN("G:AllowStartPosition")
-	for _,g in r_ipairs(self.AllowStartPositionList) do
-		tracy.ZoneBeginN("G:AllowStartPosition:" .. g.ghInfo.name)
+	local gList = self.AllowStartPositionList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowStartPosition:"][g])
 		if (not g:AllowStartPosition(playerID, teamID, readyState, cx, cy, cz, rx, ry, rz)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1234,8 +1297,10 @@ end
 
 function gadgetHandler:AllowUnitCreation(unitDefID, builderID, builderTeam, x, y, z, facing)
 	tracy.ZoneBeginN("G:AllowUnitCreation")
-	for _,g in r_ipairs(self.AllowUnitCreationList) do
-		tracy.ZoneBeginN("G:AllowUnitCreation:" .. g.ghInfo.name)
+	local gList = self.AllowUnitCreationList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowUnitCreation:"][g])
 		local allow, drop = g:AllowUnitCreation(unitDefID, builderID, builderTeam, x, y, z, facing)
 		tracy.ZoneEnd()
 		if not allow then
@@ -1250,8 +1315,10 @@ end
 
 function gadgetHandler:AllowUnitTransfer(unitID, unitDefID, oldTeam, newTeam, capture)
 	tracy.ZoneBeginN("G:AllowUnitTransfer")
-	for _,g in r_ipairs(self.AllowUnitTransferList) do
-		tracy.ZoneBeginN("G:AllowUnitTransfer:" .. g.ghInfo.name)
+	local gList = self.AllowUnitTransferList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowUnitTransfer:"][g])
 		if (not g:AllowUnitTransfer(unitID, unitDefID, oldTeam, newTeam, capture)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1266,8 +1333,10 @@ end
 
 function gadgetHandler:AllowUnitBuildStep(builderID, builderTeam, unitID, unitDefID, part)
 	tracy.ZoneBeginN("G:AllowUnitBuildStep")
-	for _,g in r_ipairs(self.AllowUnitBuildStepList) do
-		tracy.ZoneBeginN("G:AllowUnitBuildStep:" .. g.ghInfo.name)
+	local gList = self.AllowUnitBuildStepList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowUnitBuildStep:"][g])
 		if (not g:AllowUnitBuildStep(builderID, builderTeam, unitID, unitDefID, part)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1283,8 +1352,10 @@ function gadgetHandler:AllowUnitTransport(
 	transporterID, transporterUnitDefID, transporterTeam,
 	transporteeID, transporteeUnitDefID, transporteeTeam)
 	tracy.ZoneBeginN("G:AllowUnitTransport")
-	for _,g in r_ipairs(self.AllowUnitTransportList) do
-		tracy.ZoneBeginN("G:AllowUnitTransport:" .. g.ghInfo.name)
+	local gList = self.AllowUnitTransportList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowUnitTransport:"][g])
 		if (not g:AllowUnitTransport(
 			transporterID, transporterUnitDefID, transporterTeam,
 			transporteeID, transporteeUnitDefID, transporteeTeam
@@ -1304,8 +1375,10 @@ function gadgetHandler:AllowUnitTransportLoad(
 	transporteeID, transporteeUnitDefID, transporteeTeam,
 	loadPosX, loadPosY, loadPosZ)
 	tracy.ZoneBeginN("G:AllowUnitTransportLoad")
-	for _,g in r_ipairs(self.AllowUnitTransportLoadList) do
-		tracy.ZoneBeginN("G:AllowUnitTransportLoad:" .. g.ghInfo.name)
+	local gList = self.AllowUnitTransportLoadList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowUnitTransportLoad:"][g])
 		if (not g:AllowUnitTransportLoad(
 			transporterID, transporterUnitDefID, transporterTeam,
 			transporteeID, transporteeUnitDefID, transporteeTeam,
@@ -1326,8 +1399,10 @@ function gadgetHandler:AllowUnitTransportUnload(
 	transporteeID, transporteeUnitDefID, transporteeTeam,
 	unloadPosX, unloadPosY, unloadPosZ)
 	tracy.ZoneBeginN("G:AllowUnitTransportUnload")
-	for _,g in r_ipairs(self.AllowUnitTransportUnloadList) do
-		tracy.ZoneBeginN("G:AllowUnitTransportUnload:" .. g.ghInfo.name)
+	local gList = self.AllowUnitTransportUnloadList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowUnitTransportUnload:"][g])
 		if (not g:AllowUnitTransportUnload(
 			transporterID, transporterUnitDefID, transporterTeam,
 			transporteeID, transporteeUnitDefID, transporteeTeam,
@@ -1346,8 +1421,10 @@ end
 function gadgetHandler:AllowUnitCloak(unitID, enemyID)
 	tracy.ZoneBeginN("G:AllowUnitCloak")
 -- The case can be that unitID == enemyID. This is for engine stunned unitID, they are their own enemies.
-	for _,g in r_ipairs(self.AllowUnitCloakList) do
-		tracy.ZoneBeginN("G:AllowUnitCloak:" .. g.ghInfo.name)
+	local gList = self.AllowUnitCloakList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowUnitCloak:"][g])
 		if (not g:AllowUnitCloak(unitID, enemyID)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1363,8 +1440,10 @@ end
 
 function gadgetHandler:AllowUnitDecloak(unitID, objectID, weaponID)
 	tracy.ZoneBeginN("G:AllowUnitDecloak")
-	for _,g in r_ipairs(self.AllowUnitDecloakList) do
-		tracy.ZoneBeginN("G:AllowUnitDecloak:" .. g.ghInfo.name)
+	local gList = self.AllowUnitDecloakList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowUnitDecloak:"][g])
 		if (not g:AllowUnitDecloak(unitID, objectID, weaponID)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1381,8 +1460,10 @@ end
 function gadgetHandler:AllowFeatureBuildStep(builderID, builderTeam,
 	featureID, featureDefID, part)
 	tracy.ZoneBeginN("G:AllowFeatureBuildStep")
-	for _,g in r_ipairs(self.AllowFeatureBuildStepList) do
-		tracy.ZoneBeginN("G:AllowFeatureBuildStep:" .. g.ghInfo.name)
+	local gList = self.AllowFeatureBuildStepList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowFeatureBuildStep:"][g])
 		if (not g:AllowFeatureBuildStep(builderID, builderTeam, featureID, featureDefID, part)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1397,8 +1478,10 @@ end
 
 function gadgetHandler:AllowFeatureCreation(featureDefID, teamID, x, y, z)
 	tracy.ZoneBeginN("G:AllowFeatureCreation")
-	for _,g in r_ipairs(self.AllowFeatureCreationList) do
-		tracy.ZoneBeginN("G:AllowFeatureCreation:" .. g.ghInfo.name)
+	local gList = self.AllowFeatureCreationList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowFeatureCreation:"][g])
 		if (not g:AllowFeatureCreation(featureDefID, teamID, x, y, z)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1413,8 +1496,10 @@ end
 
 function gadgetHandler:AllowResourceLevel(teamID, res, level)
 	tracy.ZoneBeginN("G:AllowResourceLevel")
-	for _,g in r_ipairs(self.AllowResourceLevelList) do
-		tracy.ZoneBeginN("G:AllowResourceLevel:" .. g.ghInfo.name)
+	local gList = self.AllowResourceLevelList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowResourceLevel:"][g])
 		if (not g:AllowResourceLevel(teamID, res, level)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1429,8 +1514,10 @@ end
 
 function gadgetHandler:AllowResourceTransfer(oldTeamID, newTeamID, res, amount)
 	tracy.ZoneBeginN("G:AllowResourceTransfer")
-	for _,g in r_ipairs(self.AllowResourceTransferList) do
-		tracy.ZoneBeginN("G:AllowResourceTransfer:" .. g.ghInfo.name)
+	local gList = self.AllowResourceTransferList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowResourceTransfer:"][g])
 		if (not g:AllowResourceTransfer(oldTeamID, newTeamID, res, amount)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1445,8 +1532,10 @@ end
 
 function gadgetHandler:AllowDirectUnitControl(unitID, unitDefID, unitTeam, playerID)
 	tracy.ZoneBeginN("G:AllowDirectUnitControl")
-	for _,g in r_ipairs(self.AllowDirectUnitControlList) do
-		tracy.ZoneBeginN("G:AllowDirectUnitControl:" .. g.ghInfo.name)
+	local gList = self.AllowDirectUnitControlList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowDirectUnitControl:"][g])
 		if (not g:AllowDirectUnitControl(unitID, unitDefID, unitTeam,
 			playerID)) then
 			tracy.ZoneEnd()
@@ -1461,8 +1550,10 @@ end
 
 function gadgetHandler:AllowBuilderHoldFire(unitID, unitDefID, action)
 	tracy.ZoneBeginN("G:AllowBuilderHoldFire")
-	for _,g in r_ipairs(self.AllowBuilderHoldFireList) do
-		tracy.ZoneBeginN("G:AllowBuilderHoldFire:" .. g.ghInfo.name)
+	local gList = self.AllowBuilderHoldFireList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowBuilderHoldFire:"][g])
 		if (not g:AllowBuilderHoldFire(unitID, unitDefID, action)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1478,8 +1569,10 @@ end
 function gadgetHandler:MoveCtrlNotify(unitID, unitDefID, unitTeam, data)
 	tracy.ZoneBeginN("G:MoveCtrlNotify")
 	local state = false
-	for _,g in r_ipairs(self.MoveCtrlNotifyList) do
-		tracy.ZoneBeginN("G:MoveCtrlNotify:" .. g.ghInfo.name)
+	local gList = self.MoveCtrlNotifyList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:MoveCtrlNotify:"][g])
 		if (g:MoveCtrlNotify(unitID, unitDefID, unitTeam, data)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1494,8 +1587,10 @@ end
 
 function gadgetHandler:TerraformComplete(unitID, unitDefID, unitTeam, buildUnitID, buildUnitDefID, buildUnitTeam)
 	tracy.ZoneBeginN("G:TerraformComplete")
-	for _,g in r_ipairs(self.TerraformCompleteList) do
-		tracy.ZoneBeginN("G:TerraformComplete:" .. g.ghInfo.name)
+	local gList = self.TerraformCompleteList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:TerraformComplete:"][g])
 		local stop = g:TerraformComplete(unitID, unitDefID, unitTeam, buildUnitID, buildUnitDefID, buildUnitTeam)
 		tracy.ZoneEnd()
 		if (stop) then
@@ -1511,8 +1606,10 @@ end
 function gadgetHandler:AllowWeaponTargetCheck(attackerID, attackerWeaponNum, attackerWeaponDefID)
 	tracy.ZoneBeginN("G:AllowWeaponTargetCheck")
 	local ignore = true
-	for _, g in r_ipairs(self.AllowWeaponTargetCheckList) do
-		tracy.ZoneBeginN("G:AllowWeaponTargetCheck:" .. g.ghInfo.name)
+	local gList = self.AllowWeaponTargetCheckList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowWeaponTargetCheck:"][g])
 		local allowCheck, ignoreCheck = g:AllowWeaponTargetCheck(attackerID, attackerWeaponNum, attackerWeaponDefID)
 		tracy.ZoneEnd()
 		if not ignoreCheck then
@@ -1540,9 +1637,11 @@ function gadgetHandler:AllowWeaponTarget(attackerID, targetID, attackerWeaponNum
 	if targetID == -1 then
 		local unitID = attackerID
 		local aquireRange = defPriority
-		for _, g in r_ipairs(self.AllowUnitTargetRangeList) do
+		local gList = self.AllowUnitTargetRangeList
+		for gIdx = #gList, 1, -1 do
+			local g = gList[gIdx]
 			-- Send priority to each successive gadget.
-			tracy.ZoneBeginN("G:AllowUnitTargetRange:" .. g.ghInfo.name)
+			tracy.ZoneBeginN(ZN["G:AllowUnitTargetRange:"][g])
 			local targetAllowed, newRange = g:AllowUnitTargetRange(unitID, aquireRange)
 			tracy.ZoneEnd()
 
@@ -1558,9 +1657,11 @@ function gadgetHandler:AllowWeaponTarget(attackerID, targetID, attackerWeaponNum
 	end
 
 	local priority = defPriority
-	for _, g in r_ipairs(self.AllowWeaponTargetList) do
+	local gList = self.AllowWeaponTargetList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
 		-- Send priority to each successive gadget.
-		tracy.ZoneBeginN("G:AllowWeaponTarget:" .. g.ghInfo.name)
+		tracy.ZoneBeginN(ZN["G:AllowWeaponTarget:"][g])
 		local targetAllowed, targetPriority = g:AllowWeaponTarget(attackerID, targetID, attackerWeaponNum, attackerWeaponDefID, priority)
 		tracy.ZoneEnd()
 
@@ -1577,8 +1678,10 @@ end
 
 function gadgetHandler:AllowWeaponInterceptTarget(interceptorUnitID, interceptorWeaponNum, targetProjectileID)
 	tracy.ZoneBeginN("G:AllowWeaponInterceptTarget")
-	for _, g in r_ipairs(self.AllowWeaponInterceptTargetList) do
-		tracy.ZoneBeginN("G:AllowWeaponInterceptTarget:" .. g.ghInfo.name)
+	local gList = self.AllowWeaponInterceptTargetList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:AllowWeaponInterceptTarget:"][g])
 		if (not g:AllowWeaponInterceptTarget(interceptorUnitID, interceptorWeaponNum, targetProjectileID)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -1598,8 +1701,10 @@ end
 
 function gadgetHandler:UnitCreatedByMechanic(unitID, parentID, mechanicName, extraData)
 	tracy.ZoneBeginN("G:UnitCreatedByMechanic")
-	for _,g in r_ipairs(self.UnitCreatedByMechanicList) do
-		tracy.ZoneBeginN("G:UnitCreatedByMechanic:" .. g.ghInfo.name)
+	local gList = self.UnitCreatedByMechanicList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitCreatedByMechanic:"][g])
 		g:UnitCreatedByMechanic(unitID, parentID, mechanicName, extraData)
 		tracy.ZoneEnd()
 	end
@@ -1613,8 +1718,10 @@ function gadgetHandler:UnitCreated(unitID, unitDefID, unitTeam, builderID, build
 
 	finishedDuringCreated = false
 	inCreated = true
-	for _,g in r_ipairs(self.UnitCreatedList) do
-		tracy.ZoneBeginN("G:UnitCreated:" .. g.ghInfo.name)
+	local gList = self.UnitCreatedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitCreated:"][g])
 		g:UnitCreated(unitID, unitDefID, unitTeam, builderID, builderDefID, builderTeamID)
 		tracy.ZoneEnd()
 	end
@@ -1635,8 +1742,10 @@ function gadgetHandler:UnitFinished(unitID, unitDefID, unitTeam)
 		return
 	end
 
-	for _,g in r_ipairs(self.UnitFinishedList) do
-		tracy.ZoneBeginN("G:UnitFinished:" .. g.ghInfo.name)
+	local gList = self.UnitFinishedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitFinished:"][g])
 		g:UnitFinished(unitID, unitDefID, unitTeam)
 		tracy.ZoneEnd()
 	end
@@ -1646,8 +1755,10 @@ end
 
 function gadgetHandler:UnitReverseBuilt(unitID, unitDefID, unitTeam)
 	tracy.ZoneBeginN("G:UnitReverseBuilt")
-	for _,g in r_ipairs(self.UnitReverseBuiltList) do
-		tracy.ZoneBeginN("G:UnitReverseBuilt:" .. g.ghInfo.name)
+	local gList = self.UnitReverseBuiltList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitReverseBuilt:"][g])
 		g:UnitReverseBuilt(unitID, unitDefID, unitTeam)
 		tracy.ZoneEnd()
 	end
@@ -1657,8 +1768,10 @@ end
 
 function gadgetHandler:UnitStunned(unitID, unitDefID, unitTeam, stunned)
 	tracy.ZoneBeginN("G:UnitStunned")
-	for _,g in r_ipairs(self.UnitStunnedList) do
-		tracy.ZoneBeginN("G:UnitStunned:" .. g.ghInfo.name)
+	local gList = self.UnitStunnedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitStunned:"][g])
 		g:UnitStunned(unitID, unitDefID, unitTeam, stunned)
 		tracy.ZoneEnd()
 	end
@@ -1668,8 +1781,10 @@ end
 
 function gadgetHandler:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, userOrders)
 	tracy.ZoneBeginN("G:UnitFromFactory")
-	for _,g in r_ipairs(self.UnitFromFactoryList) do
-		tracy.ZoneBeginN("G:UnitFromFactory:" .. g.ghInfo.name)
+	local gList = self.UnitFromFactoryList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitFromFactory:"][g])
 		g:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, userOrders)
 		tracy.ZoneEnd()
 	end
@@ -1683,8 +1798,10 @@ function gadgetHandler:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, at
 	if gadgetHandler.GG._AddUnitDamage_teamID then
 		attackerTeam = gadgetHandler.GG._AddUnitDamage_teamID
 	end
-	for _,g in r_ipairs(self.UnitDestroyedList) do
-		tracy.ZoneBeginN("G:UnitDestroyed:" .. g.ghInfo.name)
+	local gList = self.UnitDestroyedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitDestroyed:"][g])
 		g:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam, weaponDefID)
 		tracy.ZoneEnd()
 	end
@@ -1695,8 +1812,10 @@ end
 
 function gadgetHandler:RenderUnitDestroyed(unitID, unitDefID, unitTeam)
 	tracy.ZoneBeginN("G:RenderUnitDestroyed")
-	for _,g in r_ipairs(self.RenderUnitDestroyedList) do
-		tracy.ZoneBeginN("G:RenderUnitDestroyed:" .. g.ghInfo.name)
+	local gList = self.RenderUnitDestroyedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:RenderUnitDestroyed:"][g])
 		g:RenderUnitDestroyed(unitID, unitDefID, unitTeam)
 		tracy.ZoneEnd()
 	end
@@ -1707,8 +1826,10 @@ end
 
 function gadgetHandler:UnitExperience(unitID, unitDefID, unitTeam, experience, oldExperience)
 	tracy.ZoneBeginN("G:UnitExperience")
-	for _,g in r_ipairs(self.UnitExperienceList) do
-		tracy.ZoneBeginN("G:UnitExperience:" .. g.ghInfo.name)
+	local gList = self.UnitExperienceList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitExperience:"][g])
 		g:UnitExperience(unitID, unitDefID, unitTeam, experience, oldExperience)
 		tracy.ZoneEnd()
 	end
@@ -1719,8 +1840,10 @@ end
 
 function gadgetHandler:UnitIdle(unitID, unitDefID, unitTeam)
 	tracy.ZoneBeginN("G:UnitIdle")
-	for _,g in r_ipairs(self.UnitIdleList) do
-		tracy.ZoneBeginN("G:UnitIdle:" .. g.ghInfo.name)
+	local gList = self.UnitIdleList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitIdle:"][g])
 		g:UnitIdle(unitID, unitDefID, unitTeam)
 		tracy.ZoneEnd()
 	end
@@ -1731,8 +1854,10 @@ end
 
 function gadgetHandler:UnitCmdDone(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdOptions, cmdTag)
 	tracy.ZoneBeginN("G:UnitCmdDone")
-	for _,g in r_ipairs(self.UnitCmdDoneList) do
-		tracy.ZoneBeginN("G:UnitCmdDone:" .. g.ghInfo.name)
+	local gList = self.UnitCmdDoneList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitCmdDone:"][g])
 		g:UnitCmdDone(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdOptions, cmdTag)
 		tracy.ZoneEnd()
 	end
@@ -1756,8 +1881,10 @@ function gadgetHandler:UnitPreDamaged(unitID, unitDefID, unitTeam,
 	tracy.ZoneBeginN("G:UnitPreDamaged")
 
 	if UnitPreDamaged_first then
-		for _,g in r_ipairs(self.UnitPreDamagedList) do
-			tracy.ZoneBeginN("G:UnitPreDamaged_GetWantedWeaponDef :" .. g.ghInfo.name)
+		local gList = self.UnitPreDamagedList
+		for gIdx = #gList, 1, -1 do
+			local g = gList[gIdx]
+			tracy.ZoneBeginN(ZN["G:UnitPreDamaged_GetWantedWeaponDef :"][g])
 			local weaponDefs = (g.UnitPreDamaged_GetWantedWeaponDef and g:UnitPreDamaged_GetWantedWeaponDef()) or allWeaponDefs
 			tracy.ZoneEnd()
 			for _,wdid in ipairs(weaponDefs) do
@@ -1787,7 +1914,7 @@ function gadgetHandler:UnitPreDamaged(unitID, unitDefID, unitTeam,
 		local g
 		for i = 1, gadgets.count do
 			g = data[i]
-			tracy.ZoneBeginN("G:UnitPreDamaged:" .. g.ghInfo.name)
+			tracy.ZoneBeginN(ZN["G:UnitPreDamaged:"][g])
 			local dam, imp = g:UnitPreDamaged(unitID, unitDefID, unitTeam,
 				rDam, paralyzer, weaponDefID,
 				attackerID, attackerDefID, attackerTeam,
@@ -1817,7 +1944,9 @@ function gadgetHandler:UnitDamaged(unitID, unitDefID, unitTeam,
 	tracy.ZoneBeginN("G:UnitDamaged")
 
 	if UnitDamaged_first then
-		for _,g in r_ipairs(self.UnitDamagedList) do
+		local gList = self.UnitDamagedList
+		for gIdx = #gList, 1, -1 do
+			local g = gList[gIdx]
 			UnitDamaged_count = UnitDamaged_count + 1
 			UnitDamaged_gadgets[UnitDamaged_count] = g
 		end
@@ -1831,7 +1960,7 @@ function gadgetHandler:UnitDamaged(unitID, unitDefID, unitTeam,
 	local g
 	for i = 1, UnitDamaged_count do
 		g = UnitDamaged_gadgets[i]
-		tracy.ZoneBeginN("G:UnitDamaged:" .. g.ghInfo.name)
+		tracy.ZoneBeginN(ZN["G:UnitDamaged:"][g])
 		g:UnitDamaged(unitID, unitDefID, unitTeam,
 		damage, paralyzer, weaponID,
 		attackerID, attackerDefID, attackerTeam, projectileID)
@@ -1844,8 +1973,10 @@ end
 
 function gadgetHandler:UnitTaken(unitID, unitDefID, unitTeam, newTeam)
 	tracy.ZoneBeginN("G:UnitTaken")
-	for _,g in r_ipairs(self.UnitTakenList) do
-		tracy.ZoneBeginN("G:UnitTaken:" .. g.ghInfo.name)
+	local gList = self.UnitTakenList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitTaken:"][g])
 		g:UnitTaken(unitID, unitDefID, unitTeam, newTeam)
 		tracy.ZoneEnd()
 	end
@@ -1856,8 +1987,10 @@ end
 
 function gadgetHandler:UnitGiven(unitID, unitDefID, unitTeam, oldTeam)
 	tracy.ZoneBeginN("G:UnitGiven")
-	for _,g in r_ipairs(self.UnitGivenList) do
-		tracy.ZoneBeginN("G:UnitGiven:" .. g.ghInfo.name)
+	local gList = self.UnitGivenList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitGiven:"][g])
 		g:UnitGiven(unitID, unitDefID, unitTeam, oldTeam)
 		tracy.ZoneEnd()
 	end
@@ -1868,8 +2001,10 @@ end
 
 function gadgetHandler:UnitEnteredRadar(unitID, unitTeam, allyTeam, unitDefID)
 	tracy.ZoneBeginN("G:UnitEnteredRadar")
-	for _,g in r_ipairs(self.UnitEnteredRadarList) do
-		tracy.ZoneBeginN("G:UnitEnteredRadar:" .. g.ghInfo.name)
+	local gList = self.UnitEnteredRadarList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitEnteredRadar:"][g])
 		g:UnitEnteredRadar(unitID, unitTeam, allyTeam, unitDefID)
 		tracy.ZoneEnd()
 	end
@@ -1880,8 +2015,10 @@ end
 
 function gadgetHandler:UnitEnteredLos(unitID, unitTeam, allyTeam, unitDefID)
 	tracy.ZoneBeginN("G:UnitEnteredLos")
-	for _,g in r_ipairs(self.UnitEnteredLosList) do
-		tracy.ZoneBeginN("G:UnitEnteredLos:" .. g.ghInfo.name)
+	local gList = self.UnitEnteredLosList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitEnteredLos:"][g])
 		g:UnitEnteredLos(unitID, unitTeam, allyTeam, unitDefID)
 		tracy.ZoneEnd()
 	end
@@ -1892,8 +2029,10 @@ end
 
 function gadgetHandler:UnitLeftRadar(unitID, unitTeam, allyTeam, unitDefID)
 	tracy.ZoneBeginN("G:UnitLeftRadar")
-	for _,g in r_ipairs(self.UnitLeftRadarList) do
-		tracy.ZoneBeginN("G:UnitLeftRadar:" .. g.ghInfo.name)
+	local gList = self.UnitLeftRadarList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitLeftRadar:"][g])
 		g:UnitLeftRadar(unitID, unitTeam, allyTeam, unitDefID)
 		tracy.ZoneEnd()
 	end
@@ -1904,8 +2043,10 @@ end
 
 function gadgetHandler:UnitLeftLos(unitID, unitTeam, allyTeam, unitDefID)
 	tracy.ZoneBeginN("G:UnitLeftLos")
-	for _,g in r_ipairs(self.UnitLeftLosList) do
-		tracy.ZoneBeginN("G:UnitLeftLos:" .. g.ghInfo.name)
+	local gList = self.UnitLeftLosList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitLeftLos:"][g])
 		g:UnitLeftLos(unitID, unitTeam, allyTeam, unitDefID)
 		tracy.ZoneEnd()
 	end
@@ -1917,8 +2058,10 @@ end
 function gadgetHandler:UnitSeismicPing(x, y, z, strength,
 	allyTeam, unitID, unitDefID)
 	tracy.ZoneBeginN("G:UnitSeismicPing")
-	for _,g in r_ipairs(self.UnitSeismicPingList) do
-		tracy.ZoneBeginN("G:UnitSeismicPing:" .. g.ghInfo.name)
+	local gList = self.UnitSeismicPingList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitSeismicPing:"][g])
 		g:UnitSeismicPing(x, y, z, strength, allyTeam, unitID, unitDefID)
 		tracy.ZoneEnd()
 	end
@@ -1929,8 +2072,10 @@ end
 
 function gadgetHandler:UnitLoaded(unitID, unitDefID, unitTeam, transportID, transportTeam)
 	tracy.ZoneBeginN("G:UnitLoaded")
-	for _,g in r_ipairs(self.UnitLoadedList) do
-		tracy.ZoneBeginN("G:UnitLoaded:" .. g.ghInfo.name)
+	local gList = self.UnitLoadedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitLoaded:"][g])
 		g:UnitLoaded(unitID, unitDefID, unitTeam, transportID, transportTeam)
 		tracy.ZoneEnd()
 	end
@@ -1941,8 +2086,10 @@ end
 
 function gadgetHandler:UnitUnloaded(unitID, unitDefID, unitTeam, transportID, transportTeam)
 	tracy.ZoneBeginN("G:UnitUnloaded")
-	for _,g in r_ipairs(self.UnitUnloadedList) do
-		tracy.ZoneBeginN("G:UnitUnloaded:" .. g.ghInfo.name)
+	local gList = self.UnitUnloadedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitUnloaded:"][g])
 		g:UnitUnloaded(unitID, unitDefID, unitTeam, transportID, transportTeam)
 		tracy.ZoneEnd()
 	end
@@ -1953,8 +2100,10 @@ end
 
 function gadgetHandler:UnitCloaked(unitID, unitDefID, unitTeam)
 	tracy.ZoneBeginN("G:UnitCloaked")
-	for _,g in r_ipairs(self.UnitCloakedList) do
-		tracy.ZoneBeginN("G:UnitCloaked:" .. g.ghInfo.name)
+	local gList = self.UnitCloakedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitCloaked:"][g])
 		g:UnitCloaked(unitID, unitDefID, unitTeam)
 		tracy.ZoneEnd()
 	end
@@ -1965,8 +2114,10 @@ end
 
 function gadgetHandler:UnitDecloaked(unitID, unitDefID, unitTeam)
 	tracy.ZoneBeginN("G:UnitDecloaked")
-	for _,g in r_ipairs(self.UnitDecloakedList) do
-		tracy.ZoneBeginN("G:UnitDecloaked:" .. g.ghInfo.name)
+	local gList = self.UnitDecloakedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitDecloaked:"][g])
 		g:UnitDecloaked(unitID, unitDefID, unitTeam)
 		tracy.ZoneEnd()
 	end
@@ -1977,8 +2128,10 @@ end
 
 function gadgetHandler:UnitUnitCollision(colliderID, collideeID)
 	tracy.ZoneBeginN("G:UnitUnitCollision")
-	for _,g in r_ipairs(self.UnitUnitCollisionList) do
-		tracy.ZoneBeginN("G:UnitUnitCollision:" .. g.ghInfo.name)
+	local gList = self.UnitUnitCollisionList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitUnitCollision:"][g])
 		g:UnitUnitCollision(colliderID, collideeID)
 		tracy.ZoneEnd()
 	end
@@ -1987,8 +2140,10 @@ end
 
 function gadgetHandler:UnitFeatureCollision(colliderID, collideeID)
 	tracy.ZoneBeginN("G:UnitArrivedAtGoal")
-	for _,g in r_ipairs(self.UnitFeatureCollisionList) do
-		tracy.ZoneBeginN("G:UnitArrivedAtGoal:" .. g.ghInfo.name)
+	local gList = self.UnitFeatureCollisionList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitArrivedAtGoal:"][g])
 		g:UnitFeatureCollision(colliderID, collideeID)
 		tracy.ZoneEnd()
 	end
@@ -1997,8 +2152,10 @@ end
 
 function gadgetHandler:UnitArrivedAtGoal(unitID, unitDefID, teamID)
 	tracy.ZoneBeginN("G:UnitArrivedAtGoal")
-	for _,g in r_ipairs(self.UnitArrivedAtGoalList) do
-		tracy.ZoneBeginN("G:UnitArrivedAtGoal:" .. g.ghInfo.name)
+	local gList = self.UnitArrivedAtGoalList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitArrivedAtGoal:"][g])
 		g:UnitArrivedAtGoal(unitID, unitDefID, teamID)
 		tracy.ZoneEnd()
 	end
@@ -2007,8 +2164,10 @@ end
 
 function gadgetHandler:StockpileChanged(unitID, unitDefID, unitTeam, weaponNum, oldCount, newCount)
 	tracy.ZoneBeginN("G:StockpileChanged")
-	for _,g in r_ipairs(self.StockpileChangedList) do
-		tracy.ZoneBeginN("G:StockpileChanged:" .. g.ghInfo.name)
+	local gList = self.StockpileChangedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:StockpileChanged:"][g])
 		g:StockpileChanged(unitID, unitDefID, unitTeam, weaponNum, oldCount, newCount)
 		tracy.ZoneEnd()
 	end
@@ -2024,8 +2183,10 @@ end
 
 function gadgetHandler:FeatureCreated(featureID, allyTeam)
 	tracy.ZoneBeginN("G:FeatureCreated")
-	for _,g in r_ipairs(self.FeatureCreatedList) do
-		tracy.ZoneBeginN("G:FeatureCreated:" .. g.ghInfo.name)
+	local gList = self.FeatureCreatedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:FeatureCreated:"][g])
 		g:FeatureCreated(featureID, allyTeam)
 		tracy.ZoneEnd()
 	end
@@ -2042,8 +2203,10 @@ function gadgetHandler:FeaturePreDamaged(featureID, featureDefID, featureTeam,
 	tracy.ZoneBeginN("G:FeaturePreDamaged")
 
 	if FeaturePreDamaged_first then
-		for _,g in r_ipairs(self.FeaturePreDamagedList) do
-			tracy.ZoneBeginN("G:FeaturePreDamaged_GetWantedWeaponDef :" .. g.ghInfo.name)
+		local gList = self.FeaturePreDamagedList
+		for gIdx = #gList, 1, -1 do
+			local g = gList[gIdx]
+			tracy.ZoneBeginN(ZN["G:FeaturePreDamaged_GetWantedWeaponDef :"][g])
 			local weaponDefs = (g.FeaturePreDamaged_GetWantedWeaponDef and g:FeaturePreDamaged_GetWantedWeaponDef()) or allWeaponDefs
 			tracy.ZoneEnd()
 			for _,wdid in ipairs(weaponDefs) do
@@ -2070,7 +2233,7 @@ function gadgetHandler:FeaturePreDamaged(featureID, featureDefID, featureTeam,
 		local g
 		for i = 1, gadgets.count do
 			g = data[i]
-			tracy.ZoneBeginN("G:FeaturePreDamaged:" .. g.ghInfo.name)
+			tracy.ZoneBeginN(ZN["G:FeaturePreDamaged:"][g])
 			local dam, imp = g:FeaturePreDamaged(featureID, featureDefID, featureTeam,
 				rDam, weaponDefID,
 				attackerID, attackerDefID, attackerTeam,
@@ -2098,7 +2261,9 @@ function gadgetHandler:FeatureDamaged(featureID, featureDefID, featureTeam, dama
 	tracy.ZoneBeginN("G:FeatureDamaged")
 
 	if FeatureDamaged_first then
-		for _,g in r_ipairs(self.FeatureDamagedList) do
+		local gList = self.FeatureDamagedList
+		for gIdx = #gList, 1, -1 do
+			local g = gList[gIdx]
 			FeatureDamaged_count = FeatureDamaged_count + 1
 			FeatureDamaged_gadgets[FeatureDamaged_count] = g
 		end
@@ -2112,7 +2277,7 @@ function gadgetHandler:FeatureDamaged(featureID, featureDefID, featureTeam, dama
 	local g
 	for i = 1, FeatureDamaged_count do
 		g = FeatureDamaged_gadgets[i]
-		tracy.ZoneBeginN("G:FeatureDamaged:" .. g.ghInfo.name)
+		tracy.ZoneBeginN(ZN["G:FeatureDamaged:"][g])
 		g:FeatureDamaged(featureID, featureDefID, featureTeam, damage, weaponDefID,
 		projectileID, attackerID, attackerDefID, attackerTeam)
 		tracy.ZoneEnd()
@@ -2124,8 +2289,10 @@ end
 
 function gadgetHandler:FeatureDestroyed(featureID, allyTeam)
 	tracy.ZoneBeginN("G:FeatureDestroyed")
-	for _,g in r_ipairs(self.FeatureDestroyedList) do
-		tracy.ZoneBeginN("G:FeatureDestroyed:" .. g.ghInfo.name)
+	local gList = self.FeatureDestroyedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:FeatureDestroyed:"][g])
 		g:FeatureDestroyed(featureID, allyTeam)
 		tracy.ZoneEnd()
 	end
@@ -2141,8 +2308,10 @@ end
 
 function gadgetHandler:ProjectileCreated(proID, proOwnerID, proWeaponDefID)
 	tracy.ZoneBeginN("G:ProjectileCreated")
-	for _,g in r_ipairs(self.ProjectileCreatedList) do
-		tracy.ZoneBeginN("G:ProjectileCreated:" .. g.ghInfo.name)
+	local gList = self.ProjectileCreatedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:ProjectileCreated:"][g])
 		g:ProjectileCreated(proID, proOwnerID, proWeaponDefID)
 		tracy.ZoneEnd()
 	end
@@ -2153,8 +2322,10 @@ end
 
 function gadgetHandler:ProjectileDestroyed(proID)
 	tracy.ZoneBeginN("G:ProjectileDestroyed")
-	for _,g in r_ipairs(self.ProjectileDestroyedList) do
-		tracy.ZoneBeginN("G:ProjectileDestroyed:" .. g.ghInfo.name)
+	local gList = self.ProjectileDestroyedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:ProjectileDestroyed:"][g])
 		g:ProjectileDestroyed(proID)
 		tracy.ZoneEnd()
 	end
@@ -2171,9 +2342,11 @@ end
 function gadgetHandler:ShieldPreDamaged(proID, proOwnerID, shieldEmitterWeaponNum, shieldCarrierUnitID, bounceProjectile, beamEmitterWeaponNum, beamEmitterUnitID, startX, startY, startZ, hitX, hitY, hitZ)
 	tracy.ZoneBeginN("G:ShieldPreDamaged")
 
-	for _,g in r_ipairs(self.ShieldPreDamagedList) do
+	local gList = self.ShieldPreDamagedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
 		-- first gadget to handle this consumes the event
-		tracy.ZoneBeginN("G:ShieldPreDamaged:" .. g.ghInfo.name)
+		tracy.ZoneBeginN(ZN["G:ShieldPreDamaged:"][g])
 		if (g:ShieldPreDamaged(proID, proOwnerID, shieldEmitterWeaponNum, shieldCarrierUnitID, bounceProjectile, beamEmitterWeaponNum, beamEmitterUnitID, startX, startY, startZ, hitX, hitY, hitZ)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -2200,8 +2373,10 @@ local Explosion_first = true
 function gadgetHandler:Explosion(weaponID, px, py, pz, ownerID, proID)
 	tracy.ZoneBeginN("G:Explosion")
 	if Explosion_first then
-		for _,g in r_ipairs(self.ExplosionList) do
-			tracy.ZoneBeginN("G:Explosion_GetWantedWeaponDef:" .. g.ghInfo.name)
+		local gList = self.ExplosionList
+		for gIdx = #gList, 1, -1 do
+			local g = gList[gIdx]
+			tracy.ZoneBeginN(ZN["G:Explosion_GetWantedWeaponDef:"][g])
 			local weaponDefs = (g.Explosion_GetWantedWeaponDef and g:Explosion_GetWantedWeaponDef()) or allWeaponDefs
 			tracy.ZoneEnd()
 			for _,wdid in ipairs(weaponDefs) do
@@ -2235,7 +2410,7 @@ function gadgetHandler:Explosion(weaponID, px, py, pz, ownerID, proID)
 		local g
 		for i = 1, gadgets.count do
 			g = data[i]
-			tracy.ZoneBeginN("G::" .. g.ghInfo.name)
+			tracy.ZoneBeginN(ZN["G::"][g])
 			noGfx = noGfx or g:Explosion(weaponID, px, py, pz, ownerID, proID)
 			tracy.ZoneEnd()
 		end
@@ -2251,8 +2426,10 @@ end
 
 function gadgetHandler:SunChanged()
 	tracy.ZoneBeginN("G:SunChanged")
-	for _,g in r_ipairs(self.SunChangedList) do
-		tracy.ZoneBeginN("G:SunChanged:" .. g.ghInfo.name)
+	local gList = self.SunChangedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:SunChanged:"][g])
 		g:SunChanged()
 		tracy.ZoneEnd()
 	end
@@ -2262,8 +2439,10 @@ end
 
 function gadgetHandler:Update(deltaTime)
 	tracy.ZoneBeginN("G:Update")
-	for _,g in r_ipairs(self.UpdateList) do
-		tracy.ZoneBeginN("G:Update:" .. g.ghInfo.name)
+	local gList = self.UpdateList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:Update:"][g])
 		g:Update(deltaTime)
 		tracy.ZoneEnd()
 	end
@@ -2274,8 +2453,10 @@ end
 
 function gadgetHandler:DefaultCommand(type, id, engineCmd)
 	tracy.ZoneBeginN("G:DefaultCommand")
-	for _,g in r_ipairs(self.DefaultCommandList) do
-		tracy.ZoneBeginN("G:DefaultCommand:" .. g.ghInfo.name)
+	local gList = self.DefaultCommandList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DefaultCommand:"][g])
 		local defCmd = g:DefaultCommand(type, id, engineCmd)
 		tracy.ZoneEnd()
 		if defCmd then
@@ -2290,8 +2471,10 @@ end
 
 function gadgetHandler:DrawGenesis()
 	tracy.ZoneBeginN("G:DrawGenesis")
-	for _,g in r_ipairs(self.DrawGenesisList) do
-		tracy.ZoneBeginN("G:DrawGenesis:" .. g.ghInfo.name)
+	local gList = self.DrawGenesisList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawGenesis:"][g])
 		g:DrawGenesis()
 		tracy.ZoneEnd()
 	end
@@ -2302,8 +2485,10 @@ end
 
 function gadgetHandler:DrawWorld()
 	tracy.ZoneBeginN("G:DrawWorld")
-	for _,g in r_ipairs(self.DrawWorldList) do
-		tracy.ZoneBeginN("G:DrawWorld:" .. g.ghInfo.name)
+	local gList = self.DrawWorldList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawWorld:"][g])
 		g:DrawWorld()
 		tracy.ZoneEnd()
 	end
@@ -2314,8 +2499,10 @@ end
 
 function gadgetHandler:DrawWorldPreUnit()
 	tracy.ZoneBeginN("G:DrawWorldPreUnit")
-	for _,g in r_ipairs(self.DrawWorldPreUnitList) do
-		tracy.ZoneBeginN("G:DrawWorldPreUnit:" .. g.ghInfo.name)
+	local gList = self.DrawWorldPreUnitList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawWorldPreUnit:"][g])
 		g:DrawWorldPreUnit()
 		tracy.ZoneEnd()
 	end
@@ -2326,8 +2513,10 @@ end
 
 function gadgetHandler:DrawWorldShadow()
 	tracy.ZoneBeginN("G:DrawWorldShadow")
-	for _,g in r_ipairs(self.DrawWorldShadowList) do
-		tracy.ZoneBeginN("G:DrawWorldShadow:" .. g.ghInfo.name)
+	local gList = self.DrawWorldShadowList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawWorldShadow:"][g])
 		g:DrawWorldShadow()
 		tracy.ZoneEnd()
 	end
@@ -2338,8 +2527,10 @@ end
 
 function gadgetHandler:DrawWorldReflection()
 	tracy.ZoneBeginN("G:DrawWorldReflection")
-	for _,g in r_ipairs(self.DrawWorldReflectionList) do
-		tracy.ZoneBeginN("G:DrawWorldReflection:" .. g.ghInfo.name)
+	local gList = self.DrawWorldReflectionList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawWorldReflection:"][g])
 		g:DrawWorldReflection()
 		tracy.ZoneEnd()
 	end
@@ -2350,8 +2541,10 @@ end
 
 function gadgetHandler:DrawWorldRefraction()
 	tracy.ZoneBeginN("G:DrawWorldRefraction")
-	for _,g in r_ipairs(self.DrawWorldRefractionList) do
-		tracy.ZoneBeginN("G:DrawWorldRefraction:" .. g.ghInfo.name)
+	local gList = self.DrawWorldRefractionList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawWorldRefraction:"][g])
 		g:DrawWorldRefraction()
 		tracy.ZoneEnd()
 	end
@@ -2362,8 +2555,10 @@ end
 
 function gadgetHandler:DrawScreenEffects(vsx, vsy)
 	tracy.ZoneBeginN("G:DrawScreenEffects")
-	for _,g in r_ipairs(self.DrawScreenEffectsList) do
-		tracy.ZoneBeginN("G:DrawScreenEffects:" .. g.ghInfo.name)
+	local gList = self.DrawScreenEffectsList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawScreenEffects:"][g])
 		g:DrawScreenEffects(vsx, vsy)
 		tracy.ZoneEnd()
 	end
@@ -2373,8 +2568,10 @@ end
 
 function gadgetHandler:DrawScreenPost(vsx, vsy)
 	tracy.ZoneBeginN("G:DrawScreenPost")
-	for _,g in r_ipairs(self.DrawScreenPostList) do
-		tracy.ZoneBeginN("G:DrawScreenPost:" .. g.ghInfo.name)
+	local gList = self.DrawScreenPostList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawScreenPost:"][g])
 		g:DrawScreenPost(vsx, vsy)
 		tracy.ZoneEnd()
 	end
@@ -2385,8 +2582,10 @@ end
 
 function gadgetHandler:DrawScreen(vsx, vsy)
 	tracy.ZoneBeginN("G:DrawScreen")
-	for _,g in r_ipairs(self.DrawScreenList) do
-		tracy.ZoneBeginN("G:DrawScreen:" .. g.ghInfo.name)
+	local gList = self.DrawScreenList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawScreen:"][g])
 		g:DrawScreen(vsx, vsy)
 		tracy.ZoneEnd()
 	end
@@ -2397,8 +2596,10 @@ end
 
 function gadgetHandler:DrawInMiniMap(mmsx, mmsy)
 	tracy.ZoneBeginN("G:DrawInMiniMap")
-	for _,g in r_ipairs(self.DrawInMiniMapList) do
-		tracy.ZoneBeginN("G:DrawInMiniMap:" .. g.ghInfo.name)
+	local gList = self.DrawInMiniMapList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawInMiniMap:"][g])
 		g:DrawInMiniMap(mmsx, mmsy)
 		tracy.ZoneEnd()
 	end
@@ -2408,8 +2609,10 @@ end
 
 function gadgetHandler:DrawOpaqueUnitsLua(deferredPass, drawReflection, drawRefraction)
 	tracy.ZoneBeginN("G:DrawOpaqueUnitsLua")
-	for _, g in r_ipairs(self.DrawOpaqueUnitsLuaList) do
-		tracy.ZoneBeginN("G:DrawOpaqueUnitsLua:" .. g.ghInfo.name)
+	local gList = self.DrawOpaqueUnitsLuaList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawOpaqueUnitsLua:"][g])
 		g:DrawOpaqueUnitsLua(deferredPass, drawReflection, drawRefraction)
 		tracy.ZoneEnd()
 	end
@@ -2419,8 +2622,10 @@ end
 
 function gadgetHandler:DrawOpaqueFeaturesLua(deferredPass, drawReflection, drawRefraction)
 	tracy.ZoneBeginN("G:DrawOpaqueFeaturesLua")
-	for _, g in r_ipairs(self.DrawOpaqueFeaturesLuaList) do
-		tracy.ZoneBeginN("G:DrawOpaqueFeaturesLua:" .. g.ghInfo.name)
+	local gList = self.DrawOpaqueFeaturesLuaList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawOpaqueFeaturesLua:"][g])
 		g:DrawOpaqueFeaturesLua(deferredPass, drawReflection, drawRefraction)
 		tracy.ZoneEnd()
 	end
@@ -2430,8 +2635,10 @@ end
 
 function gadgetHandler:DrawAlphaUnitsLua(drawReflection, drawRefraction)
 	tracy.ZoneBeginN("G:DrawAlphaUnitsLua")
-	for _, g in r_ipairs(self.DrawAlphaUnitsLuaList) do
-		tracy.ZoneBeginN("G:DrawAlphaUnitsLua:" .. g.ghInfo.name)
+	local gList = self.DrawAlphaUnitsLuaList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawAlphaUnitsLua:"][g])
 		g:DrawAlphaUnitsLua(drawReflection, drawRefraction)
 		tracy.ZoneEnd()
 	end
@@ -2441,8 +2648,10 @@ end
 
 function gadgetHandler:DrawAlphaFeaturesLua(drawReflection, drawRefraction)
 	tracy.ZoneBeginN("G:DrawAlphaFeaturesLua")
-	for _, g in r_ipairs(self.DrawAlphaFeaturesLuaList) do
-		tracy.ZoneBeginN("G:DrawAlphaFeaturesLua:" .. g.ghInfo.name)
+	local gList = self.DrawAlphaFeaturesLuaList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawAlphaFeaturesLua:"][g])
 		g:DrawAlphaFeaturesLua(drawReflection, drawRefraction)
 		tracy.ZoneEnd()
 	end
@@ -2452,8 +2661,10 @@ end
 
 function gadgetHandler:DrawShadowUnitsLua()
 	tracy.ZoneBeginN("G:DrawShadowUnitsLua")
-	for _, g in r_ipairs(self.DrawShadowUnitsLuaList) do
-		tracy.ZoneBeginN("G:DrawShadowUnitsLua:" .. g.ghInfo.name)
+	local gList = self.DrawShadowUnitsLuaList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawShadowUnitsLua:"][g])
 		g:DrawShadowUnitsLua()
 		tracy.ZoneEnd()
 	end
@@ -2463,8 +2674,10 @@ end
 
 function gadgetHandler:DrawShadowFeaturesLua()
 	tracy.ZoneBeginN("G:DrawShadowFeaturesLua")
-	for _, g in r_ipairs(self.DrawShadowFeaturesLuaList) do
-		tracy.ZoneBeginN("G:DrawShadowFeaturesLua:" .. g.ghInfo.name)
+	local gList = self.DrawShadowFeaturesLuaList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:DrawShadowFeaturesLua:"][g])
 		g:DrawShadowFeaturesLua()
 		tracy.ZoneEnd()
 	end
@@ -2478,8 +2691,10 @@ end
 
 function gadgetHandler:KeyPress(key, mods, isRepeat, label, unicode, scanCode)
 	tracy.ZoneBeginN("G:KeyPress")
-	for _,g in r_ipairs(self.KeyPressList) do
-		tracy.ZoneBeginN("G:KeyPress:" .. g.ghInfo.name)
+	local gList = self.KeyPressList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:KeyPress:"][g])
 		if (g:KeyPress(key, mods, isRepeat, label, unicode, scanCode)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -2494,8 +2709,10 @@ end
 
 function gadgetHandler:KeyRelease(key, mods, label, unicode, scanCode)
 	tracy.ZoneBeginN("G:KeyRelease")
-	for _,g in r_ipairs(self.KeyReleaseList) do
-		tracy.ZoneBeginN("G:KeyRelease:" .. g.ghInfo.name)
+	local gList = self.KeyReleaseList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:KeyRelease:"][g])
 		if (g:KeyRelease(key, mods, label, unicode, scanCode)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -2516,8 +2733,10 @@ function gadgetHandler:MousePress(x, y, button)
 		tracy.ZoneEnd()
 		return true  --  already have an active press
 	end
-	for _,g in r_ipairs(self.MousePressList) do
-		tracy.ZoneBeginN("G:MousePress:" .. g.ghInfo.name)
+	local gList = self.MousePressList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:MousePress:"][g])
 		if (g:MousePress(x, y, button)) then
 			self.mouseOwner = g
 			tracy.ZoneEnd()
@@ -2560,8 +2779,10 @@ end
 
 function gadgetHandler:MouseWheel(up, value)
 	tracy.ZoneBeginN("G:MouseWheel")
-	for _,g in r_ipairs(self.MouseWheelList) do
-		tracy.ZoneBeginN("G:MouseWheel:" .. g.ghInfo.name)
+	local gList = self.MouseWheelList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:MouseWheel:"][g])
 		if (g:MouseWheel(up, value)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -2576,8 +2797,10 @@ end
 
 function gadgetHandler:IsAbove(x, y)
 	tracy.ZoneBeginN("G:IsAbove")
-	for _,g in r_ipairs(self.IsAboveList) do
-		tracy.ZoneBeginN("G:IsAbove:" .. g.ghInfo.name)
+	local gList = self.IsAboveList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:IsAbove:"][g])
 		if (g:IsAbove(x, y)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -2592,11 +2815,13 @@ end
 
 function gadgetHandler:GetTooltip(x, y)
 	tracy.ZoneBeginN("G:GetTooltip")
-	for _,g in r_ipairs(self.GetTooltipList) do
-		tracy.ZoneBeginN("G:IsAbove:" .. g.ghInfo.name)
+	local gList = self.GetTooltipList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:IsAbove:"][g])
 		if (g:IsAbove(x, y)) then
 			tracy.ZoneEnd()
-			tracy.ZoneBeginN("G:GetTooltip:" .. g.ghInfo.name)
+			tracy.ZoneBeginN(ZN["G:GetTooltip:"][g])
 			local tip = g:GetTooltip(x, y)
 			tracy.ZoneEnd()
 			if (string.len(tip) > 0) then
@@ -2614,8 +2839,10 @@ end
 
 function gadgetHandler:UnsyncedHeightMapUpdate(x1, z1, x2, z2)
 	tracy.ZoneBeginN("G:UnsyncedHeightMapUpdate")
-	for _,g in r_ipairs(self.UnsyncedHeightMapUpdateList) do
-		tracy.ZoneBeginN("G:UnsyncedHeightMapUpdate:" .. g.ghInfo.name)
+	local gList = self.UnsyncedHeightMapUpdateList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnsyncedHeightMapUpdate:"][g])
 		g:UnsyncedHeightMapUpdate(x1, z1, x2, z2)
 		tracy.ZoneEnd()
 	end
@@ -2662,21 +2889,23 @@ function gadgetHandler:AllowCommand(unitID, unitDefID, unitTeam, cmdID, cmdParam
 		playerID = nil
 	end
 
-	for _,g in r_ipairs(self.AllowCommandList) do
+	local gList = self.AllowCommandList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
 		if not AllowCommand_WantedCommand[g] then
-			tracy.ZoneBeginN("G:AllowCommand_WantedCommand:" .. g.ghInfo.name)
+			tracy.ZoneBeginN(ZN["G:AllowCommand_WantedCommand:"][g])
 			AllowCommand_WantedCommand[g] = (g.AllowCommand_GetWantedCommand and g:AllowCommand_GetWantedCommand()) or true
 			tracy.ZoneEnd()
 		end
 		if not AllowCommand_WantedUnitDefID[g] then
-			tracy.ZoneBeginN("G:AllowCommand_WantedUnitDefID:" .. g.ghInfo.name)
+			tracy.ZoneBeginN(ZN["G:AllowCommand_WantedUnitDefID:"][g])
 			AllowCommand_WantedUnitDefID[g] = (g.AllowCommand_GetWantedUnitDefID and g:AllowCommand_GetWantedUnitDefID()) or true
 			tracy.ZoneEnd()
 		end
 		local wantedCommand = AllowCommand_WantedCommand[g]
 		local wantedUnitDefID = AllowCommand_WantedUnitDefID[g]
 
-		tracy.ZoneBeginN("G:AllowCommand:" .. g.ghInfo.name)
+		tracy.ZoneBeginN(ZN["G:AllowCommand:"][g])
 		if ((wantedCommand == true) or wantedCommand[cmdID]) and
 			((wantedUnitDefID == true) or wantedUnitDefID[unitDefID]) and
 			(not g:AllowCommand(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdOptions, cmdTag, playerID, fromSynced, fromLua)) then
@@ -2703,8 +2932,10 @@ function gadgetHandler:RecvFromSynced(cmd,...)
 		tracy.ZoneEnd()
 		return
 	end
-	for _,g in r_ipairs(self.RecvFromSyncedList) do
-		tracy.ZoneBeginN("G:RecvFromSynced:" .. g.ghInfo.name)
+	local gList = self.RecvFromSyncedList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:RecvFromSynced:"][g])
 		if (g:RecvFromSynced(cmd, ...)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -2749,8 +2980,10 @@ function gadgetHandler:GotChatMsg(msg, player)
 		return true
 	end
 
-	for _,g in r_ipairs(self.GotChatMsgList) do
-		tracy.ZoneBeginN("G:GotChatMsg:" .. g.ghInfo.name)
+	local gList = self.GotChatMsgList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:GotChatMsg:"][g])
 		if (g:GotChatMsg(msg, player)) then
 			tracy.ZoneEnd()
 			tracy.ZoneEnd()
@@ -2770,8 +3003,10 @@ function gadgetHandler:ViewResize(viewGeometry)
 	local vsx = viewGeometry.viewSizeX
 	local vsy = viewGeometry.viewSizeY
 
-	for _,g in r_ipairs(self.ViewResizeList) do
-		tracy.ZoneBeginN("G:ViewResize:" .. g.ghInfo.name)
+	local gList = self.ViewResizeList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:ViewResize:"][g])
 		g:ViewResize(vsx, vsy, viewGeometry)
 		tracy.ZoneEnd()
 	end
@@ -2790,8 +3025,10 @@ if Script.IsEngineMinVersion(104, 0, 1431) then
 	-- opts is a bitmask
 	function gadgetHandler:UnitCommand(unitID, unitDefID, unitTeam, cmdID, cmdOpts, cmdParams, cmdTag, playerID, fromSynced, fromLua)
 		tracy.ZoneBeginN("G:UnitCommand")
-		for _,g in r_ipairs(self.UnitCommandList) do
-			tracy.ZoneBeginN("G:UnitCommand:" .. g.ghInfo.name)
+		local gList = self.UnitCommandList
+		for gIdx = #gList, 1, -1 do
+			local g = gList[gIdx]
+			tracy.ZoneBeginN(ZN["G:UnitCommand:"][g])
 			g:UnitCommand(unitID, unitDefID, unitTeam, cmdID, cmdOpts, cmdParams, cmdTag, playerID, fromSynced, fromLua)
 			tracy.ZoneEnd()
 		end
@@ -2804,8 +3041,10 @@ else
 	-- opts is a bitmask
 	function gadgetHandler:UnitCommand(unitID, unitDefID, unitTeam, cmdID, cmdOpts, cmdParams)
 		tracy.ZoneBeginN("G:UnitCommand")
-		for _,g in r_ipairs(self.UnitCommandList) do
-			tracy.ZoneBeginN("G:UnitCommand:" .. g.ghInfo.name)
+		local gList = self.UnitCommandList
+		for gIdx = #gList, 1, -1 do
+			local g = gList[gIdx]
+			tracy.ZoneBeginN(ZN["G:UnitCommand:"][g])
 			g:UnitCommand(unitID, unitDefID, unitTeam, cmdID, cmdOpts, cmdParams)
 			tracy.ZoneEnd()
 		end
@@ -2817,8 +3056,10 @@ end
 
 function gadgetHandler:UnitEnteredWater(unitID, unitDefID, unitTeam)
 	tracy.ZoneBeginN("G:UnitEnteredWater")
-	for _,g in r_ipairs(self.UnitEnteredWaterList) do
-		tracy.ZoneBeginN("G:UnitEnteredWater:" .. g.ghInfo.name)
+	local gList = self.UnitEnteredWaterList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitEnteredWater:"][g])
 		g:UnitEnteredWater(unitID, unitDefID, unitTeam)
 		tracy.ZoneEnd()
 	end
@@ -2829,8 +3070,10 @@ end
 
 function gadgetHandler:UnitEnteredAir(unitID, unitDefID, unitTeam)
 	tracy.ZoneBeginN("G:UnitEnteredAir")
-	for _,g in r_ipairs(self.UnitEnteredAirList) do
-		tracy.ZoneBeginN("G:UnitEnteredAir:" .. g.ghInfo.name)
+	local gList = self.UnitEnteredAirList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitEnteredAir:"][g])
 		g:UnitEnteredAir(unitID, unitDefID, unitTeam)
 		tracy.ZoneEnd()
 	end
@@ -2841,8 +3084,10 @@ end
 
 function gadgetHandler:UnitLeftWater(unitID, unitDefID, unitTeam)
 	tracy.ZoneBeginN("G:UnitLeftWater")
-	for _,g in r_ipairs(self.UnitLeftWaterList) do
-		tracy.ZoneBeginN("G:UnitLeftWater:" .. g.ghInfo.name)
+	local gList = self.UnitLeftWaterList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitLeftWater:"][g])
 		g:UnitLeftWater(unitID, unitDefID, unitTeam)
 		tracy.ZoneEnd()
 	end
@@ -2853,8 +3098,10 @@ end
 
 function gadgetHandler:UnitLeftAir(unitID, unitDefID, unitTeam)
 	tracy.ZoneBeginN("G:UnitLeftAir")
-	for _,g in r_ipairs(self.UnitLeftAirList) do
-		tracy.ZoneBeginN("G:UnitLeftAir:" .. g.ghInfo.name)
+	local gList = self.UnitLeftAirList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:UnitLeftAir:"][g])
 		g:UnitLeftAir(unitID, unitDefID, unitTeam)
 		tracy.ZoneEnd()
 	end
@@ -2864,8 +3111,10 @@ end
 
 function gadgetHandler:GameSetup(state, ready, playerStates)
 	tracy.ZoneBeginN("G:GameSetup")
-	for _,g in r_ipairs(self.GameSetupList) do
-		tracy.ZoneBeginN("G:GameSetup:" .. g.ghInfo.name)
+	local gList = self.GameSetupList
+	for gIdx = #gList, 1, -1 do
+		local g = gList[gIdx]
+		tracy.ZoneBeginN(ZN["G:GameSetup:"][g])
 		local success, newReady = g:GameSetup(state, ready, playerStates)
 		tracy.ZoneEnd()
 		if (success) then
