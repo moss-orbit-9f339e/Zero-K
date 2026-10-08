@@ -40,22 +40,24 @@ local function GetUnitIsMobile(self, unitID)
 	return true
 end
 
+local spGetFactoryCommands = Spring.GetFactoryCommands
+local spGetUnitCurrentCommand = Spring.GetUnitCurrentCommand
+
+-- The tag of the factory's or unit's first command. GetUnitCurrentCommand reads the same queue
+-- as GetUnitCommands(unitID, 1), without building command tables.
 local function GetCmdTag(unitID)
 	local cmdTag = 0
-	local cmds = Spring.GetFactoryCommands(unitID,1)
+	local cmds = spGetFactoryCommands(unitID,1)
 	if (cmds) then
-			local cmd = cmds[1]
-			if cmd then
-				 cmdTag = cmd.tag
-			end
+		local cmd = cmds[1]
+		if cmd then
+			cmdTag = cmd.tag
 		end
+	end
 	if cmdTag == 0 then
-		local cmds = Spring.GetUnitCommands(unitID,1)
-		if (cmds) then
-			local cmd = cmds[1]
-			if cmd then
-				cmdTag = cmd.tag
-			end
+		local cmdID, _, tag = spGetUnitCurrentCommand(unitID)
+		if cmdID then
+			cmdTag = tag
 		end
 	end
 	return cmdTag
@@ -75,7 +77,15 @@ function UpdateNanoParticles(self)
 		--// UPDATE STARTPOS
 		local uid = self.unitID
 		if Spring.ValidUnitID(uid) then
-			self.pos = {Spring.GetUnitPiecePosDir(uid,self.unitpiece)}
+			local pos = self.pos
+			if pos and pos == self._ownPos then
+				-- the table was made here and nothing else refers to it: update in place
+				pos[1], pos[2], pos[3], pos[4], pos[5], pos[6] = Spring.GetUnitPiecePosDir(uid,self.unitpiece)
+			else
+				pos = {Spring.GetUnitPiecePosDir(uid,self.unitpiece)}
+				self.pos = pos
+				self._ownPos = pos
+			end
 		else
 			if (not self._dead) then
 				--// assigned source unit died
@@ -89,7 +99,14 @@ function UpdateNanoParticles(self)
 		if (tid >= 0) then
 			if (not self.isFeature) then
 				if Spring.ValidUnitID(tid) then
-					self.targetpos = {GetUnitMidPos(tid)}
+					local tpos = self.targetpos
+					if tpos and tpos == self._ownTargetPos then
+						tpos[1], tpos[2], tpos[3] = GetUnitMidPos(tid)
+					else
+						tpos = {GetUnitMidPos(tid)}
+						self.targetpos = tpos
+						self._ownTargetPos = tpos
+					end
 					if (not self._staticTarget) then
 						self._staticTarget = (GetUnitIsMobile(self,tid) and 0) or 1
 					end
