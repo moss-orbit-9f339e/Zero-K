@@ -141,7 +141,11 @@ function StaticParticles:Draw()
 	glUniform(sizeUniform,self.usize)
 	glUniform(frameUniform,self.frame)
 
-	glPushMatrix()
+	-- Lups restores the matrix right after drawing in piece space: no own Push/Pop
+	local ownMatrix = not LupsInPushedMatrix
+	if ownMatrix then
+		glPushMatrix()
+	end
 	local pos = self.pos
 	if (pos[1] ~= 0) or (pos[2] ~= 0) or (pos[3] ~= 0) then -- translating by 0 is an exact no-op
 		glTranslate(pos[1],pos[2],pos[3])
@@ -152,7 +156,9 @@ function StaticParticles:Draw()
 		glRotate(rot2,0,1,0)
 	end
 		glCallList(self.dlist)
-	glPopMatrix()
+	if ownMatrix then
+		glPopMatrix()
+	end
 end
 
 
@@ -320,11 +326,11 @@ function StaticParticles:Visible()
 	local losState
 	if (self.unit and not self.worldspace) then
 		losState = GetUnitLosState(self.unit)
-		local ux,uy,uz = spGetUnitViewPosition(self.unit)
+		local ux,uy,uz = LupsGetUnitViewPosition(self.unit) -- cached per visibility pass
 		if not ux then
 			return false
 		end
-		radius = radius + (spGetUnitRadius(self.unit) or 0)
+		radius = radius + (LupsGetUnitRadius(self.unit) or 0) -- cached per visibility pass
 		if self.noIconDraw then
 			if not Spring.IsUnitVisible(self.unit, radius, self.noIconDraw) then
 				return false

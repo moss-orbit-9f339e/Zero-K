@@ -129,6 +129,12 @@ local visDirty = true
 local COARSE_VIEW_MARGIN = 800
 local unitNearView = {}
 
+-- Incremented once per Update: a per-drawn-frame stamp for caches shared by the draw passes
+-- of one frame (reflection, world). Particle classes read LupsDrawStamp.
+LupsDrawStamp = 0
+-- Incremented per visibility pass: stamp for per-pass caches.
+local passStamp = 0
+
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
@@ -260,6 +266,8 @@ for _,filename in ipairs(files) do
 		if (Class.GetInfo) then
 			Class.pi = Class.GetInfo()
 			local sClassName = string.lower(Class.pi.name)
+			-- cached so GameFrame does not lower-case the class name per effect per frame
+			Class.pi.deferrable = deferrableClass[sClassName] or false
 			if (fxClasses[sClassName]) then
 				print(PRIO_LESS,'LUPS: duplicated particle class name "' .. sClassName .. '"')
 			else
@@ -283,6 +291,32 @@ local particlesCount = 0
 local RenderSequence = {}  --// mult-dim table with: [layer][partClass][unitID][fx]
 local effectsInDelay = {}  --// fxs which use the delay tag, and waiting for their spawn
 local partIDCount = 0  --// increasing ID used to identify the particles
+
+--// Sorted list of the layers the draw loops visit (integers in [-50,50], like the old
+--// "for i=-50,50" scans), so a pass does not probe 101 mostly empty layers.
+local activeLayers = {}
+local activeLayerCount = 0
+local knownLayer = {}
+
+local function RegisterLayer(layer)
+	if knownLayer[layer] ~= nil then
+		return
+	end
+	if type(layer) ~= "number" or layer ~= math.floor(layer) or layer < -50 or layer > 50 then
+		knownLayer[layer] = false
+		return
+	end
+	knownLayer[layer] = true
+	local pos = activeLayerCount + 1
+	for i = 1, activeLayerCount do
+		if activeLayers[i] > layer then
+			pos = i
+			break
+		end
+	end
+	table.insert(activeLayers, pos, layer)
+	activeLayerCount = activeLayerCount + 1
+end
 
 --[[
 local function DebugPieces(unit,piecenum,level)
@@ -366,6 +400,10 @@ function AddParticles(Class,Options   ,__id)
 		local fxTable = CreateSubTables(RenderSequence,{newParticles.layer,particleClass,space})
 		newParticles.fxTable = fxTable
 		fxTable[#fxTable+1] = newParticles
+		local layer = newParticles.layer
+		if layer ~= nil and not knownLayer[layer] then
+			RegisterLayer(layer)
+		end
 
 		return newParticles.id;
 	else
@@ -398,10 +436,14 @@ end
 function RemoveParticles(particlesID)
 	local fx = particles[particlesID]
 	if (fx) then
-		if (type(fx.fxTable)=="table") then
-			for j,w in pairs(fx.fxTable) do
-				if (w.id==particlesID) then
-					pop(fx.fxTable,j)
+		local fxTable = fx.fxTable
+		if (type(fxTable)=="table") then
+			-- ids are unique within a render list: stop at the match instead of scanning on
+			-- (nano spray lists hold hundreds of effects). table.remove keeps the draw order.
+			for j = 1, #fxTable do
+				if (fxTable[j].id == particlesID) then
+					pop(fxTable, j)
+					break
 				end
 			end
 		end
@@ -541,15 +583,49 @@ local function RadarDotCheck(unitID)
 	return true
 end
 
+-- Draw passes. Unit render lists none of whose effects is drawn in this pass do not enter
+-- unit space (a balanced Push/UnitMultMatrix/Pop changes no GL state, but used to be done for
+-- every unit with effects on the map, on screen or not, in every pass). World-space effects of
+-- classes whose Draw leaves the matrix untouched (Class.drawIsMatrixNeutral) skip the
+-- surrounding PushMatrix/PopMatrix pair.
+local PASS_STRINGS = {}
+local function PassStrings(extension)
+	local s = PASS_STRINGS[extension]
+	if not s then
+		s = {"BeginDraw"..extension, "Draw"..extension, "EndDraw"..extension}
+		PASS_STRINGS[extension] = s
+	end
+	return s
+end
+
+-- The gadget's unit-position check, cached per drawn frame (LOS only changes in sim frames).
+local posKnownStamp = {}
+local posKnownValue = {}
+local function IsUnitPositionKnownCached(unitID)
+	if LocalAllyTeamID < 0 then
+		return true
+	end
+	if posKnownStamp[unitID] == LupsDrawStamp then
+		return posKnownValue[unitID]
+	end
+	local known = IsUnitPositionKnown(unitID)
+	posKnownStamp[unitID] = LupsDrawStamp
+	posKnownValue[unitID] = known
+	return known
+end
+
 local function Draw(extension,layer,water,waterPass)
 	local FxLayer = RenderSequence[layer];
 	if (not FxLayer) then return end
 
 	-- the reflection/refraction passes use the visibility without main view culling
 	local visKey = (waterPass and "waterVisible") or "visible"
-	local BeginDrawPass = "BeginDraw"..extension
-	local DrawPass      = "Draw"..extension
-	local EndDrawPass   = "EndDraw"..extension
+	local passStrings   = PassStrings(extension)
+	local BeginDrawPass = passStrings[1]
+	local DrawPass      = passStrings[2]
+	local EndDrawPass   = passStrings[3]
+	local normalPass    = (extension == "")
+	LupsInPushedMatrix = false
 
 	for partClass,Units in pairs(FxLayer) do
 		local beginDraw = partClass[BeginDrawPass]
@@ -557,6 +633,7 @@ local function Draw(extension,layer,water,waterPass)
 
 			beginDraw()
 			local drawfunc = partClass[DrawPass]
+			local matrixNeutral = normalPass and partClass.drawIsMatrixNeutral
 
 			if (not next(Units)) then
 				FxLayer[partClass]=nil
@@ -564,15 +641,23 @@ local function Draw(extension,layer,water,waterPass)
 				for unitID,UnitEffects in pairs(Units) do
 					if (not UnitEffects[1]) then
 						Units[unitID]=nil
-					else
+					elseif (unitID>-1) then
 
-						if (unitID>-1) then
-
-							------------------------------------------------------------------------------------
-							-- render in unit/piece space ------------------------------------------------------
-							------------------------------------------------------------------------------------
+						------------------------------------------------------------------------------------
+						-- render in unit/piece space, only if something is drawn --------------------------
+						------------------------------------------------------------------------------------
+						local nfx = #UnitEffects
+						local first
+						for i=1,nfx do
+							local fx = UnitEffects[i]
+							if (fx.alwaysVisible or fx[visKey]) and (not water or not fx.nowater) then
+								first = i
+								break
+							end
+						end
+						if first then
 							glPushMatrix()
-							if gadget and not IsUnitPositionKnown(unitID) then
+							if gadget and not IsUnitPositionKnownCached(unitID) then
 								local x, y, z = Spring.GetUnitPosition(unitID)
 								local a11, a12, a13, a14, a21, a22, a23, a24, a31, a32, a33, a34, a41, a42, a43, a44 = Spring.GetUnitTransformMatrix(unitID)
 								if a11 then
@@ -583,10 +668,9 @@ local function Draw(extension,layer,water,waterPass)
 							else
 								glUnitMultMatrix(unitID)
 							end
-							
 
 							--// render effects
-							for i=1,#UnitEffects do
+							for i=first,nfx do
 								local fx = UnitEffects[i]
 								if (fx.alwaysVisible or fx[visKey]) and (not water or not fx.nowater) then
 									if (fx.piecenum) then
@@ -594,7 +678,10 @@ local function Draw(extension,layer,water,waterPass)
 										glPushMatrix()
 											glUnitPieceMultMatrix(unitID,fx.piecenum)
 											glScale(1,1,-1)
+											-- the matrix is restored right after: classes may skip their own Push/Pop
+											LupsInPushedMatrix = true
 											drawfunc(fx)
+											LupsInPushedMatrix = false
 										glPopMatrix()
 										--// leave piece space
 									else
@@ -605,26 +692,32 @@ local function Draw(extension,layer,water,waterPass)
 
 							--// leave unit space
 							glPopMatrix()
+						end
 
-						else
+					else
 
-							------------------------------------------------------------------------------------
-							-- render in world space -----------------------------------------------------------
-							------------------------------------------------------------------------------------
-							for i=1,#UnitEffects do
-								local fx = UnitEffects[i]
-								if (fx.alwaysVisible or fx[visKey]) and (not water or not fx.nowater) then
+						------------------------------------------------------------------------------------
+						-- render in world space -----------------------------------------------------------
+						------------------------------------------------------------------------------------
+						for i=1,#UnitEffects do
+							local fx = UnitEffects[i]
+							if (fx.alwaysVisible or fx[visKey]) and (not water or not fx.nowater) then
+								if fx.projectile and not fx.worldspace then
 									glPushMatrix()
-									if fx.projectile and not fx.worldspace then
-										local x,y,z = spGetProjectilePosition(fx.projectile)
-										glTranslate(x,y,z)
-									end
+									local x,y,z = spGetProjectilePosition(fx.projectile)
+									glTranslate(x,y,z)
+									drawfunc(fx)
+									glPopMatrix()
+								elseif matrixNeutral then
+									drawfunc(fx)
+								else
+									glPushMatrix()
 									drawfunc(fx)
 									glPopMatrix()
 								end
-							end -- for
-						end -- if
-					end  --if
+							end
+						end -- for
+					end -- if
 				end  --for
 			end
 
@@ -637,8 +730,8 @@ end
 local function DrawDistortionLayers()
 	glBlending(GL_ONE,GL_ONE)
 
-	for i=-50,50 do
-		Draw("Distortion",i)
+	for li=1,activeLayerCount do
+		Draw("Distortion",activeLayers[li])
 	end
 
 	glBlending(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA)
@@ -659,8 +752,8 @@ local function DrawParticlesOpaque()
 
 	glDepthTest(true)
 	glDepthMask(true)
-	for i=-50,50 do
-		Draw("Opaque",i)
+	for li=1,activeLayerCount do
+		Draw("Opaque",activeLayers[li])
 	end
 	glDepthMask(false)
 	glDepthTest(false)
@@ -673,8 +766,10 @@ local function DrawParticles()
 
 	--// Draw() (layers: -50 upto 0)
 	glAlphaTest(GL_GREATER, 0)
-	for i=-50,0 do
-		Draw("",i)
+	for li=1,activeLayerCount do
+		local layer = activeLayers[li]
+		if layer > 0 then break end
+		Draw("",layer)
 	end
 	glAlphaTest(false)
 
@@ -687,8 +782,11 @@ local function DrawParticles()
 
 	--// Draw() (layers: 1 upto 50)
 	glAlphaTest(GL_GREATER, 0)
-	for i=1,50 do
-		Draw("",i)
+	for li=1,activeLayerCount do
+		local layer = activeLayers[li]
+		if layer > 0 then
+			Draw("",layer)
+		end
 	end
 
 	glAlphaTest(false)
@@ -703,15 +801,15 @@ local function DrawParticlesWater()
 
 	--// DrawOpaque()
 	glDepthMask(true)
-	for i=-50,50 do
-		Draw("Opaque",i,nil,true)
+	for li=1,activeLayerCount do
+		Draw("Opaque",activeLayers[li],nil,true)
 	end
 	glDepthMask(false)
 
 	--// Draw() (layers: -50 upto 50)
 	glAlphaTest(GL_GREATER, 0)
-	for i=-50,50 do
-		Draw("",i,true,true)
+	for li=1,activeLayerCount do
+		Draw("",activeLayers[li],true,true)
 	end
 	glAlphaTest(false)
 end
@@ -780,12 +878,63 @@ function IsPosInAirLos(x,y,z)
 	return LocalAllyTeamID == Script.ALL_ACCESS_TEAM or (LocalAllyTeamID ~= Script.NO_ACCESS_TEAM and Spring.IsPosInAirLos(x,y,z, LocalAllyTeamID))
 end
 
-function GetUnitLosState(unitID)
+local function GetUnitLosStateRaw(unitID)
 	if LocalAllyTeamID == 0 then
 		UpdateAllyTeamStatus()
 	end
 	return LocalAllyTeamID == Script.ALL_ACCESS_TEAM or (LocalAllyTeamID ~= Script.NO_ACCESS_TEAM and (Spring.GetUnitLosState(unitID, LocalAllyTeamID) or {}).los) or false
 end
+
+--// Per-visibility-pass caches of per-unit engine queries. Several effects of one unit ask the
+--// same questions within a pass, and nothing they depend on changes inside a pass. Outside a
+--// pass (inVisPass false) the queries go straight to the engine.
+local inVisPass = false
+local losStamp, losValue = {}, {}
+local radStamp, radValue = {}, {}
+local vposStamp, vposX, vposY, vposZ = {}, {}, {}, {}
+
+function GetUnitLosState(unitID)
+	if not inVisPass then
+		return GetUnitLosStateRaw(unitID)
+	end
+	if losStamp[unitID] == passStamp then
+		return losValue[unitID]
+	end
+	local v = GetUnitLosStateRaw(unitID)
+	losStamp[unitID] = passStamp
+	losValue[unitID] = v
+	return v
+end
+
+local function UnitRadiusCached(unitID)
+	if not inVisPass then
+		return spGetUnitRadius(unitID)
+	end
+	if radStamp[unitID] == passStamp then
+		return radValue[unitID]
+	end
+	local r = spGetUnitRadius(unitID)
+	radStamp[unitID] = passStamp
+	radValue[unitID] = r
+	return r
+end
+
+local function UnitViewPositionCached(unitID)
+	if not inVisPass then
+		return spGetUnitViewPosition(unitID)
+	end
+	if vposStamp[unitID] == passStamp then
+		return vposX[unitID], vposY[unitID], vposZ[unitID]
+	end
+	local x, y, z = spGetUnitViewPosition(unitID)
+	vposStamp[unitID] = passStamp
+	vposX[unitID], vposY[unitID], vposZ[unitID] = x, y, z
+	return x, y, z
+end
+
+-- for particle classes' Visible()
+LupsGetUnitRadius = UnitRadiusCached
+LupsGetUnitViewPosition = UnitViewPositionCached
 
 -- Returns the visibility for the main view and for the water passes (reflection, refraction).
 local function IsUnitFXVisible(fx)
@@ -808,7 +957,7 @@ local function IsUnitFXVisible(fx)
 			if not fx.worldspace then
 				local near = unitNearView[unitID]
 				if near == nil then
-					near = spIsUnitVisible(unitID, (spGetUnitRadius(unitID) or 0) + COARSE_VIEW_MARGIN, false)
+					near = spIsUnitVisible(unitID, (UnitRadiusCached(unitID) or 0) + COARSE_VIEW_MARGIN, false)
 					unitNearView[unitID] = near
 				end
 				if not near then
@@ -824,7 +973,7 @@ local function IsUnitFXVisible(fx)
 					return true, true
 				end
 			end
-			local unitRadius = (spGetUnitRadius(unitID) or 0) + 40
+			local unitRadius = (UnitRadiusCached(unitID) or 0) + 40
 			local r = fx.radius or fx.size or fx.length
 			if type(r) ~= "number" then
 				r = 0
@@ -834,7 +983,7 @@ local function IsUnitFXVisible(fx)
 			local v = fx:Visible()
 			return v, v
 		else
-			local unitRadius = (spGetUnitRadius(unitID) or 0) + 40
+			local unitRadius = (UnitRadiusCached(unitID) or 0) + 40
 			local r = fx.radius or 0
 			local v = spIsUnitVisible(unitID, unitRadius + r, fx.noIconDraw)
 			return v, v
@@ -879,6 +1028,8 @@ local function CreateVisibleFxList()
 	local removeFX = {}
 	local removeCnt = 1
 	unitNearView = {}
+	passStamp = (passStamp + 1) % 4194304 -- stays exact with float lua numbers
+	inVisPass = true
 
 	for _,fx in pairs(particles) do
 		if ((fx.unit or -1) > -1) then
@@ -912,6 +1063,7 @@ local function CreateVisibleFxList()
 		end
 	end
 	--Spring.Echo("Lups fx cnt", particles.GetIndexMax())
+	inVisPass = false
 
 	for i=1,removeCnt-1 do
 		RemoveParticles(removeFX[i])
@@ -921,9 +1073,16 @@ end
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
+-- A unit has render lists in several layers/classes: ask the engine once per unit and call
+-- (nothing changes within the call).
+local validStamp, validValue = {}, {}
+local validCallStamp = 0
+
 local function CleanInvalidUnitFX()
 	local removeFX = {}
 	local removeCnt = 1
+	validCallStamp = (validCallStamp + 1) % 4194304
+	local stamp = validCallStamp
 
 	for layerID,layer in pairs(RenderSequence) do
 		for partClass,Units in pairs(layer) do
@@ -932,7 +1091,15 @@ local function CleanInvalidUnitFX()
 					Units[unitID] = nil
 				else
 					if (unitID>-1) then
-						if (not spValidUnitID(unitID)) then --// UnitID isn't valid anymore, remove all its effects
+						local valid
+						if validStamp[unitID] == stamp then
+							valid = validValue[unitID]
+						else
+							valid = spValidUnitID(unitID)
+							validStamp[unitID] = stamp
+							validValue[unitID] = valid
+						end
+						if (not valid) then --// UnitID isn't valid anymore, remove all its effects
 							for i=1,#UnitEffects do
 								local fx = UnitEffects[i]
 								removeFX[removeCnt] = fx.id
@@ -1014,7 +1181,7 @@ local function GameFrame(_,n)
 			if (partFx.Update) then
 				local pi = partFx.pi
 				if DEFER_OFFSCREEN_UPDATES and not partFx.visible and not (waterPassesEnabled and partFx.waterVisible)
-						and pi and deferrableClass[StrToLower(pi.name or "")] then
+						and pi and pi.deferrable then
 					partFx.pendingFrames = (partFx.pendingFrames or 0) + framesToUpdate
 				else
 					local pending = partFx.pendingFrames
@@ -1040,6 +1207,8 @@ local function GameFrame(_,n)
 end
 
 local function Update(_,dt)
+	LupsDrawStamp = (LupsDrawStamp + 1) % 4194304 -- stays exact with float lua numbers
+
 	--// update frameoffset and self allyteam
 	frameOffset = spGetFrameTimeOffset()
 	UpdateAllyTeamStatus()

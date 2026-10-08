@@ -160,9 +160,15 @@ end
 -----------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------
 
+-- Draw() does not touch the matrix stack: Lups skips its Push/PopMatrix pair.
+SimpleParticles2.drawIsMatrixNeutral = true
+
+local passTimeOffset -- constant within a drawn frame, read once per pass
+
 function SimpleParticles2.BeginDraw()
 	glUseShader(billShader)
 	glBlending(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+	passTimeOffset = Spring.GetFrameTimeOffset()
 end
 
 function SimpleParticles2.EndDraw()
@@ -179,7 +185,7 @@ function SimpleParticles2:Draw()
 		lastTexture=self.texture
 	end
 
-	glMultiTexCoord(5, (self.frame + Spring.GetFrameTimeOffset())/200)
+	glMultiTexCoord(5, (self.frame + passTimeOffset)/200)
 	glCallList(self.dlist)
 end
 
@@ -387,11 +393,11 @@ function SimpleParticles2:Visible()
 	local losState
 	if (self.unit and not self.worldspace) then
 		losState = GetUnitLosState(self.unit)
-		local ux,uy,uz = spGetUnitViewPosition(self.unit)
+		local ux,uy,uz = LupsGetUnitViewPosition(self.unit) -- cached per visibility pass
 		if not ux then
 			return false
 		end
-		radius = radius + (spGetUnitRadius(self.unit) or 0)
+		radius = radius + (LupsGetUnitRadius(self.unit) or 0) -- cached per visibility pass
 		if self.noIconDraw then
 			if not Spring.IsUnitVisible(self.unit, radius, self.noIconDraw) then
 				return false
