@@ -1047,10 +1047,7 @@ end
 
 --//=============================================================================
 
-local function InLocalRect(cx,cy,w,h)
-  return (cx>=0)and(cy>=0)and(cx<=w)and(cy<=h)
-end
-
+local ObjectParentToLocal = Object.ParentToLocal
 
 function Control:HitTest(x,y)
   if (not self.disableChildrenHitTest) then
@@ -1060,8 +1057,14 @@ function Control:HitTest(x,y)
       for i=1,#children do
         local c = children[i]
         if (c) then
-          local cx,cy = c:ParentToLocal(cax,cay)
-          if InLocalRect(cx,cy,c.width,c.height) then
+          --// c:ParentToLocal and InLocalRect inlined (same operations and order)
+          local cx,cy
+          if (c.ParentToLocal == ObjectParentToLocal) then
+            cx,cy = cax - c.x, cay - c.y
+          else
+            cx,cy = c:ParentToLocal(cax,cay)
+          end
+          if (cx>=0)and(cy>=0)and(cx<=c.width)and(cy<=c.height) then
             local obj = c:HitTest(cx,cy)
             if (obj) then
               return obj
