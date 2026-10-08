@@ -2257,61 +2257,53 @@ local function updateTerraformEdgePoints(id)
 			local z = point.z
 
 			local area = terraformUnit[id].area
-			local edges = 0
-			local edge = {}
-			
-			local spots = {top = false, bot = false, left = false, right = false}
-			
-			if (not area[x-8]) or (not area[x-8][z]) then
-				spots.left = true
-			end
-			if (not area[x+8]) or (not area[x+8][z]) then
-				spots.right = true
-			end
-			if not area[x][z-8] then
-				spots.top = true
-			end
-			if not area[x][z+8] then
-				spots.bot = true
-			end
-			
-			if spots.left then
-				edges = edges + 1
-				edge[edges] = {x = x-8, z = z, checkX = -8, checkZ = nil}
-				if spots.top then
+
+			local left = (not area[x-8]) or (not area[x-8][z])
+			local right = (not area[x+8]) or (not area[x+8][z])
+			local top = not area[x][z-8]
+			local bot = not area[x][z+8]
+
+			-- edges ~= 0 exactly when at least one side is open, so only allocate for edge points.
+			if left or right or top or bot then
+				local edges = 0
+				local edge = {}
+
+				if left then
 					edges = edges + 1
-					edge[edges] = {x = x-8, z = z-8, checkX = -8, checkZ = -8}
+					edge[edges] = {x = x-8, z = z, checkX = -8, checkZ = nil}
+					if top then
+						edges = edges + 1
+						edge[edges] = {x = x-8, z = z-8, checkX = -8, checkZ = -8}
+					end
+					if bot then
+						edges = edges + 1
+						edge[edges] = {x = x-8, z = z+8, checkX = -8, checkZ = 8}
+					end
 				end
-				if spots.bot then
+
+				if right then
 					edges = edges + 1
-					edge[edges] = {x = x-8, z = z+8, checkX = -8, checkZ = 8}
+					edge[edges] = {x = x+8, z = z, checkX = 8, checkZ = nil}
+					if top then
+						edges = edges + 1
+						edge[edges] = {x = x+8, z = z-8, checkX = 8, checkZ = -8}
+					end
+					if bot then
+						edges = edges + 1
+						edge[edges] = {x = x+8, z = z+8, checkX = 8, checkZ = 8}
+					end
 				end
-			end
-			
-			if spots.right then
-				edges = edges + 1
-				edge[edges] = {x = x+8, z = z, checkX = 8, checkZ = nil}
-				if spots.top then
+
+				if top then
 					edges = edges + 1
-					edge[edges] = {x = x+8, z = z-8, checkX = 8, checkZ = -8}
+					edge[edges] = {x = x, z = z-8, checkX = nil, checkZ = -8}
 				end
-				if spots.bot then
+
+				if bot then
 					edges = edges + 1
-					edge[edges] = {x = x+8, z = z+8, checkX = 8, checkZ = 8}
+					edge[edges] = {x = x, z = z+8, checkX = nil, checkZ = 8}
 				end
-			end
-			
-			if spots.top then
-				edges = edges + 1
-				edge[edges] = {x = x, z = z-8, checkX = nil, checkZ = -8}
-			end
-			
-			if spots.bot then
-				edges = edges + 1
-				edge[edges] = {x = x, z = z+8, checkX = nil, checkZ = 8}
-			end
-			
-			if edges ~= 0 then
+
 				point.edges = edges
 				point.edge = edge
 			else
@@ -2993,10 +2985,12 @@ local function updateTerraform(health, id, arrayIndex, costDiff)
 	end
 	
 	local func = function()
+		local points = terra.point
 		for i = 1, terra.points do
-			local height = terra.point[i].orHeight+terra.point[i].diffHeight*terraformUpdateProgress
-			spSetHeightMap(terra.point[i].x,terra.point[i].z, height)
-			terra.point[i].prevHeight = height
+			local point = points[i]
+			local height = point.orHeight+point.diffHeight*terraformUpdateProgress
+			spSetHeightMap(point.x,point.z, height)
+			point.prevHeight = height
 		end
 		for i = 1, extraPoints do
 			spSetHeightMap(extraPoint[i].x,extraPoint[i].z,extraPoint[i].orHeight + extraPoint[i].heightDiff*edgeTerraMult)
@@ -3084,6 +3078,7 @@ local function updateTerraform(health, id, arrayIndex, costDiff)
 			end
 		end
 		
+		local mapgenOrigHeight = GG.mapgen_origHeight -- constant for the loop: only C functions run inside it
 		for i = 1, count do
 			local x = drawX[i] + 4
 			local z = drawZ[i] + 4
@@ -3091,12 +3086,17 @@ local function updateTerraform(health, id, arrayIndex, costDiff)
 			local extraEdge = (drawEdge[i] == 2)
 			
 			-- edge exists because raised walls have passability at higher normal than uniform ramps
-			local oHeight = GetGroundOrigHeightOverride(drawX[i], drawZ[i], 4, 4)
+			local oHeight
+			if mapgenOrigHeight then
+				oHeight = GetGroundOrigHeightOverride(drawX[i], drawZ[i], 4, 4)
+			else
+				oHeight = spGetGroundOrigHeight(x, z)
+			end
 			local height = spGetGroundHeight(x, z)
 			if abs(oHeight-height) < 1 then
 				drawTex[i] = 0
 			else
-				local normal = select(2, Spring.GetGroundNormal(x,z))
+				local _, normal = spGetGroundNormal(x, z)
 				if (edge and normal > 0.82) or (normal > 0.892) then
 					drawTex[i] = 1
 				elseif ((edge or extraEdge) and normal > 0.455) or (normal > 0.585) then
@@ -3135,24 +3135,23 @@ local function DoTerraformUpdate(n, forceCompletion)
 	local i = 1
 	while i <= terraformUnitCount do
 		local id = terraformUnitTable[i]
-		if IsDebug(id) then
-			-- EchoDebug(id, "Check", Spring.GetUnitHealth(id))
-		end
-		if (spValidUnitID(id)) then
-			local force = (forceCompletion and not terraformUnit[id].disableForceCompletion)
-			
-			local health = spGetUnitHealth(id)
-			if health - terraformUnit[id].lastHealth == 0 then
-				if (not forceCompletion) and (n % decayCheckFrequency == 0 and (not terraformUnit[id].noDecay) and terraformUnit[id].decayTime < n) then
+		-- Synced code has full read access, so GetUnitHealth returns nil exactly when ValidUnitID would return false.
+		local health = spGetUnitHealth(id)
+		if health then
+			local terra = terraformUnit[id]
+			local force = (forceCompletion and not terra.disableForceCompletion)
+
+			if health - terra.lastHealth == 0 then
+				if (not forceCompletion) and (n % decayCheckFrequency == 0 and (not terra.noDecay) and terra.decayTime < n) then
 					EchoUnit(id)
 					EchoDebug(id, "Decay", id)
 					deregisterTerraformUnit(id,i,3)
 					spDestroyUnit(id, false, true)
 				else
 					i = i + 1
-					if (n - terraformUnit[id].lastUpdate >= updatePeriod) then
+					if (n - terra.lastUpdate >= updatePeriod) then
 						CheckNearbyEnemy(id)
-						terraformUnit[id].lastUpdate = n
+						terra.lastUpdate = n
 					end
 				end
 			else
