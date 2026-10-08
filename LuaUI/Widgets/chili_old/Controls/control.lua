@@ -888,16 +888,91 @@ function Control:_DrawInClientArea(fnc,...)
 end
 
 
+--// RectInViewFast(obj, x,y,w,h) returns exactly obj:IsRectInView(x,y,w,h)
+--// for the IsRectInView/ClientToParent implementations of Control,
+--// ScrollPanel and Screen (same comparisons and the same float operations in
+--// the same order), but walks up the parents in a loop over the raw objects
+--// instead of recursing through method calls on weak links. Anything else
+--// is handed to its own IsRectInView. View culling is most of the Lua work
+--// when a window is redrawn.
+local ControlIsRectInView, ControlClientToParent
+local ScrollPanelIsRectInView, ScrollPanelClientToParent
+local ScreenIsRectInView
+local type, getmetatable = type, getmetatable
+
+--// UnlinkSafe for a parent field: a weak link (userdata whose metatable
+--// holds the object in _obj, see links.lua) or the object itself
+local function RawParent(link)
+	if type(link) == "userdata" then
+		local obj = getmetatable(link)._obj
+		if type(obj) == "userdata" then
+			return UnlinkSafe(obj)
+		end
+		return obj
+	end
+	return link
+end
+
+local function RectInViewFast(P, x, y, w, h)
+	if not ScreenIsRectInView then
+		ControlIsRectInView, ControlClientToParent = Control.IsRectInView, Control.ClientToParent
+		ScrollPanelIsRectInView, ScrollPanelClientToParent = ScrollPanel.IsRectInView, ScrollPanel.ClientToParent
+		ScreenIsRectInView = Screen.IsRectInView
+	end
+	while true do
+		local f = P.IsRectInView
+		if (f == ControlIsRectInView) and (P.ClientToParent == ControlClientToParent) then
+			local parent = P.parent
+			if not parent then
+				return false
+			end
+			local praw = RawParent(parent)
+			if not praw then
+				return false
+			end
+			local ca = P.clientArea
+			if not ((x <= 0 + ca[3]) and (x + w >= 0) and (y <= 0 + ca[4]) and (y + h >= 0)) then
+				return false
+			end
+			x, y = x + P.x + ca[1], y + P.y + ca[2]
+			P = praw
+		elseif (f == ScrollPanelIsRectInView) and (P.ClientToParent == ScrollPanelClientToParent) then
+			local parent = P.parent
+			if not parent then
+				return false
+			end
+			local praw = RawParent(parent)
+			if not praw then
+				return f(P, x, y, w, h)
+			end
+			local ca = P.clientArea
+			local cx = x - P.scrollPosX
+			local cy = y - P.scrollPosY
+			if not ((cx <= 0 + ca[3]) and (cx + w >= 0) and (cy <= 0 + ca[4]) and (cy + h >= 0)) then
+				return false
+			end
+			x, y = x + P.x + ca[1] - P.scrollPosX, y + P.y + ca[2] - P.scrollPosY
+			P = praw
+		elseif (f == ScreenIsRectInView) then
+			return (x <= P.width) and (x + w >= 0) and (y <= P.height) and (y + h >= 0)
+		else
+			return f(P, x, y, w, h)
+		end
+	end
+end
+
+
 function Control:IsInView()
-	if UnlinkSafe(self.parent) then
-		return self.parent:IsRectInView(self.x, self.y, self.width, self.height)
+	local parent = UnlinkSafe(self.parent)
+	if parent then
+		return RectInViewFast(parent, self.x, self.y, self.width, self.height)
 	end
 	return false
 end
 
 
 function Control:IsChildInView(child)
-	return self:IsRectInView(child.x, child.y, child.width, child.height)
+	return RectInViewFast(UnlinkSafe(self), child.x, child.y, child.width, child.height)
 end
 
 
