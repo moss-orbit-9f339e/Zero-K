@@ -34,11 +34,14 @@ function gadget:GameFrame(frame)
 		for i = 1, unitCount do
 			local unitID = unitList[i]
 			local data = units[unitID]
-			if (data.idleFrame < frame) and (not spGetUnitIsStunned(unitID)) and (spGetUnitRulesParam(unitID, "disarmed") ~= 1) then
+			if (data.idleFrame < frame) then
 				local regenRate = GG.att_RegenChange[unitID] or 1
 				local amount = data.rate * regenRate
-				local health = spGetUnitHealth(unitID)
-				if health then
+				local health, maxHealth = spGetUnitHealth(unitID)
+				-- SetUnitHealth stores min(maxHealth, value), so with health == maxHealth and
+				-- amount >= 0 it would be a no-op. Skip it and the stun/disarm reads (all pure getters).
+				if health and not (health == maxHealth and amount >= 0)
+						and (not spGetUnitIsStunned(unitID)) and (spGetUnitRulesParam(unitID, "disarmed") ~= 1) then
 					spSetUnitHealth(unitID, health + amount)
 				end
 			end
