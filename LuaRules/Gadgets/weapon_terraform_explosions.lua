@@ -32,6 +32,7 @@ local spGetUnitHealth       = Spring.GetUnitHealth
 local floor                 = math.floor
 local max                   = math.max
 local min                   = math.min
+local exp                   = math.exp
 
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
@@ -59,15 +60,18 @@ for i = 1, #WeaponDefs do
 	if wd.customParams and wd.customParams.smoothradius or wd.customParams.smoothmult then
 		wantedList[#wantedList + 1] = wd.id
 		Script.SetWatchExplosion(wd.id, true)
+		-- customParams values are strings. Lua converts them with the same luaO_str2d (strtod) on every
+		-- arithmetic use as tonumber() does, so converting once here gives bit-identical numbers and
+		-- saves a string parse per smoothed point (smooth and smoothexponent are used per point).
 		SeismicWeapon[wd.id] = {
-			smooth = wd.customParams.smoothmult or DEFAULT_SMOOTH,
-			smoothradius = wd.customParams.smoothradius or wd.craterAreaOfEffect*0.5,
-			gatherradius = wd.customParams.gatherradius or wd.craterAreaOfEffect*0.75,
+			smooth = tonumber(wd.customParams.smoothmult or DEFAULT_SMOOTH),
+			smoothradius = tonumber(wd.customParams.smoothradius or wd.craterAreaOfEffect*0.5),
+			gatherradius = tonumber(wd.customParams.gatherradius or wd.craterAreaOfEffect*0.75),
 			quickgather = wd.customParams.quickgather,
 			detachmentradius = wd.customParams.detachmentradius,
 			smoothheightoffset = wd.customParams.smoothheightoffset,
 			movestructures = wd.customParams.movestructures,
-			smoothexponent = wd.customParams.smoothexponent,
+			smoothexponent = tonumber(wd.customParams.smoothexponent),
 		}
 	end
 end
@@ -79,7 +83,7 @@ local VALUE = 3
 local NUMERATOR = (2 + math.exp(VALUE) + math.exp(-1*VALUE))/(math.exp(VALUE) - math.exp(-1*VALUE))
 local OFFSET = NUMERATOR/(1 + math.exp(VALUE))
 local function FalloffFunc(disSQ, smoothradiusSQ, smoothExponent)
-	return NUMERATOR/(1 + math.exp(2*VALUE*(disSQ/smoothradiusSQ)^smoothExponent - VALUE)) - OFFSET
+	return NUMERATOR/(1 + exp(2*VALUE*(disSQ/smoothradiusSQ)^smoothExponent - VALUE)) - OFFSET
 end
 
 local function DoSmooth(def, x, y, z)
@@ -116,8 +120,9 @@ local function DoSmooth(def, x, y, z)
 	
 	local increment = (def.quickgather and 16) or 8
 	for i = sx - gatherradius, sx + gatherradius, increment do
+		local dxSQ = (i - x)^2 -- same value the inner loop used to recompute per point
 		for j = sz - gatherradius, sz + gatherradius, increment do
-			local disSQ = (i - x)^2 + (j - z)^2
+			local disSQ = dxSQ + (j - z)^2
 			if disSQ <= gatherradiusSQ then
 				groundPoints = groundPoints + 1
 				groundHeight = groundHeight + spGetGroundHeight(i,j)
