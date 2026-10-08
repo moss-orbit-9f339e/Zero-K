@@ -246,36 +246,63 @@ end
 
 
 -- Emits every cursor quad inside one glBeginEnd; colours are set per quad as before.
+-- Same samples, values (same arithmetic in the same order) and calls as the original loop:
+-- per cursor the constant table reads are hoisted, the cubic blend is inlined (its weights are
+-- shared by x and z), and an idle cursor (all 6 samples at its last position) is handled with
+-- one position.
 local function DrawCursorQuads(time)
   for playerID,data in pairs(WG.alliedCursorsPos) do
     local dataLen = #data
     local teamID = data[dataLen]
-    local lastX, lastZ, gy, inView
-    for n=0,5 do
+    local pressed = data[dataLen-1] --mouse pressed?
+    local base = time-data[dataLen-2]
+    if (base >= sendPacketEvery) then
+      -- idle: lastUpdatedDiff = base + n*0.025 >= sendPacketEvery for every n
       local wx,wz = data[1],data[2]
-      local lastUpdatedDiff = time-data[dataLen-2] + n*0.025
-
-      if (lastUpdatedDiff<sendPacketEvery) then
-        local scale  = (1-(lastUpdatedDiff/sendPacketEvery))*numMousePos
-        local iscale = math.min(floor(scale),numMousePos-1)
-        local fscale = scale-iscale
-
-        wx = CubicInterpolate2(data[iscale*2+1],data[(iscale+1)*2+1],fscale)
-        wz = CubicInterpolate2(data[iscale*2+2],data[(iscale+1)*2+2],fscale)
-      end
-
-      if (wx ~= lastX) or (wz ~= lastZ) then
-        lastX, lastZ = wx, wz
-        gy = GetGroundHeight(wx,wz)
-        inView = IsSphereInView(wx,gy,wz,16)
-      end
-      if (inView) then
-        if (data[dataLen-1]) then --mouse pressed?
-          glColor(1,0,0,n*0.2)
-        else
-          SetTeamColor(teamID,n*0.2)
+      local gy = GetGroundHeight(wx,wz)
+      if IsSphereInView(wx,gy,wz,16) then
+        for n=0,5 do
+          if (pressed) then
+            glColor(1,0,0,n*0.2)
+          else
+            SetTeamColor(teamID,n*0.2)
+          end
+          DrawGroundquad(wx,gy,wz)
         end
-        DrawGroundquad(wx,gy,wz)
+      end
+    else
+      local lastX, lastZ, gy, inView
+      for n=0,5 do
+        local wx,wz = data[1],data[2]
+        local lastUpdatedDiff = base + n*0.025
+
+        if (lastUpdatedDiff<sendPacketEvery) then
+          local scale  = (1-(lastUpdatedDiff/sendPacketEvery))*numMousePos
+          local iscale = floor(scale)
+          if iscale > numMousePos-1 then iscale = numMousePos-1 end -- math.min
+          local mix = scale-iscale
+          -- CubicInterpolate2(x0,x1,mix)
+          local mix2 = mix*mix
+          local mix3 = mix2*mix
+          local w0, w1 = (2*mix3-3*mix2+1), (3*mix2-2*mix3)
+          local i = iscale*2
+          wx = data[i+1]*w0 + data[i+3]*w1
+          wz = data[i+2]*w0 + data[i+4]*w1
+        end
+
+        if (wx ~= lastX) or (wz ~= lastZ) then
+          lastX, lastZ = wx, wz
+          gy = GetGroundHeight(wx,wz)
+          inView = IsSphereInView(wx,gy,wz,16)
+        end
+        if (inView) then
+          if (pressed) then
+            glColor(1,0,0,n*0.2)
+          else
+            SetTeamColor(teamID,n*0.2)
+          end
+          DrawGroundquad(wx,gy,wz)
+        end
       end
     end
   end
