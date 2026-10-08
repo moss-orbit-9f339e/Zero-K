@@ -217,6 +217,25 @@ function makeVAOandAttach(vertexVBO, instanceVBO, indexVBO) -- Attach a vertex b
 	return newVAO
 end
 
+-- Attach dummy buffers so the engine keeps the VAO between draws instead of
+-- rebuilding it on every draw (see stabilizeVAO in modules/graphics/instancevbotable.lua, which
+-- also holds the shared dummies). No-ops where that module is not loaded.
+function stabilizeVAO(vao, hasVertex, hasInstance, hasIndex, freeAttrib, minVertices)
+	local module = gl.InstanceVBOTable
+	if module and module.stabilizeVAO then
+		return module.stabilizeVAO(vao, hasVertex, hasInstance, hasIndex, freeAttrib, minVertices)
+	end
+	return false
+end
+
+function stabilizeInstanceTableVAO(iT, freeAttrib)
+	local module = gl.InstanceVBOTable
+	if module and module.stabilizeInstanceTableVAO then
+		return module.stabilizeInstanceTableVAO(iT, freeAttrib)
+	end
+	return false
+end
+
 
 --------------- DEBUG HELPERS --------------------------
 local function comparetables(t1, t2, name)
@@ -394,6 +413,9 @@ function resizeInstanceVBOTable(iT)
 	if iT.VAO then -- reattach new if updated :D
 		iT.VAO:Delete()
 		iT.VAO = makeVAOandAttach(iT.vertexVBO,iT.instanceVBO, iT.indexVBO)
+		if iT.stableVAOFreeAttrib ~= nil then
+			stabilizeInstanceTableVAO(iT, iT.stableVAOFreeAttrib or nil)
+		end
 	end
 
 	if iT.indextoUnitID then

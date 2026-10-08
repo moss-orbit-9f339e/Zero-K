@@ -683,6 +683,9 @@ local function InitDrawPrimitiveAtUnit(modifiedShaderConf, DPATname)
 	local DrawPrimitiveAtUnitVAO = gl.GetVAO()
 	DrawPrimitiveAtUnitVAO:AttachVertexBuffer(DrawPrimitiveAtUnitVBO.instanceVBO)
 	DrawPrimitiveAtUnitVBO.VAO = DrawPrimitiveAtUnitVAO
+	-- Keep the VAO between draws (see stabilizeVAO). Attribute 6 is free: the buffer and the
+	-- vertex shader above use 0-5.
+	stabilizeInstanceTableVAO(DrawPrimitiveAtUnitVBO, 6)
 	return DrawPrimitiveAtUnitVBO, DrawPrimitiveAtUnitShader
 end
 

@@ -296,6 +296,98 @@ local function makeVAOandAttach(vertexVBO, instanceVBO, indexVBO) -- Attach a ve
 	return newVAO
 end
 
+--------------- STABLE VAOs --------------------------
+-- The engine's LuaVAOImpl::CondInitVAO only keeps a VAO between draws when a vertex, an index
+-- AND an instance buffer are attached; with any of them missing it deletes the GL VAO and
+-- re-creates it (re-specifying every attribute) on every DrawArrays/DrawElements call.
+-- stabilizeVAO attaches shared one-element dummies for the missing buffers, so the VAO is built
+-- once. Callers opt in where the result is known to render identically:
+--  * a dummy index buffer is never read by DrawArrays (and DrawElements is only used where a
+--    real index buffer is attached);
+--  * a dummy instance (and vertex) buffer feeds a single float attribute at `freeAttrib`
+--    (vertex) / `freeAttrib + 1` (instance when the vertex buffer is a dummy too) that neither
+--    the attached buffers nor the caller's shaders use; draws stay non-instanced (no instance
+--    count is passed), and a dummy vertex buffer only appears in VAOs that draw with an
+--    explicit vertex count of at most `minVertices`.
+local stableVAODummies = {}
+
+local function GetStableVAODummy(kind, attribID, count)
+	local key = kind .. ":" .. tostring(attribID) .. ":" .. count
+	local vbo = stableVAODummies[key]
+	if vbo == nil then
+		vbo = false
+		local zeros = {}
+		for i = 1, count do
+			zeros[i] = 0
+		end
+		local ok, result = pcall(function()
+			local v
+			if kind == "index" then
+				v = gl.GetVBO(GL.ELEMENT_ARRAY_BUFFER, false)
+				if not v then return nil end
+				v:Define(count)
+			else
+				v = gl.GetVBO(GL.ARRAY_BUFFER, false)
+				if not v then return nil end
+				v:Define(count, { { id = attribID, name = "zkStableVAODummy" .. kind, size = 1 } })
+			end
+			v:Upload(zeros)
+			return v
+		end)
+		if ok and result then
+			vbo = result
+		end
+		stableVAODummies[key] = vbo
+	end
+	return vbo or nil
+end
+
+--- Attaches dummies for the buffers a VAO lacks (see above). Returns true if it attached all.
+---@param vao VAO?
+---@param hasVertex boolean
+---@param hasInstance boolean
+---@param hasIndex boolean
+---@param freeAttrib integer? attribute location free in the attached buffers and the shaders
+---@param minVertices integer? element count of a dummy vertex buffer (the draws' vertex count)
+local function stabilizeVAO(vao, hasVertex, hasInstance, hasIndex, freeAttrib, minVertices)
+	if not vao then
+		return false
+	end
+	if (not hasInstance or not hasVertex) and not freeAttrib then
+		return false
+	end
+	local vertexDummy, instanceDummy, indexDummy
+	if not hasIndex then
+		indexDummy = GetStableVAODummy("index", 0, 1)
+		if not indexDummy then return false end
+	end
+	if not hasInstance then
+		instanceDummy = GetStableVAODummy("instance", hasVertex and freeAttrib or (freeAttrib + 1), 1)
+		if not instanceDummy then return false end
+	end
+	if not hasVertex then
+		vertexDummy = GetStableVAODummy("vertex", freeAttrib, minVertices or 3)
+		if not vertexDummy then return false end
+	end
+	-- the vertex dummy last: if anything fails before it, the draws' vertex count checks are as before
+	local ok = pcall(function()
+		if indexDummy then vao:AttachIndexBuffer(indexDummy) end
+		if instanceDummy then vao:AttachInstanceBuffer(instanceDummy) end
+		if vertexDummy then vao:AttachVertexBuffer(vertexDummy) end
+	end)
+	return ok
+end
+
+--- stabilizeVAO for an instance table whose VAO was made like makeVAOandAttach(iT.vertexVBO,
+--- iT.instanceVBO, iT.indexVBO) (no vertexVBO: the instance buffer is the vertex buffer).
+--- Remembered on the table, so the VAO resizeInstanceVBOTable re-creates is stabilized too.
+---@param iT InstanceVBOTable
+---@param freeAttrib integer? needed when iT.vertexVBO is nil (see stabilizeVAO)
+local function stabilizeInstanceTableVAO(iT, freeAttrib)
+	iT.stableVAOFreeAttrib = freeAttrib or false
+	return stabilizeVAO(iT.VAO, true, iT.vertexVBO ~= nil, iT.indexVBO ~= nil, freeAttrib)
+end
+
 --------------- DEBUG HELPERS --------------------------
 local function comparetables(t1, t2, name)
 	for k, v in pairs(t1) do
@@ -522,6 +614,9 @@ local function resizeInstanceVBOTable(iT)
 	if iT.VAO then -- reattach new if updated :D
 		iT.VAO:Delete()
 		iT.VAO = makeVAOandAttach(iT.vertexVBO, iT.instanceVBO, iT.indexVBO)
+		if iT.stableVAOFreeAttrib ~= nil then
+			stabilizeInstanceTableVAO(iT, iT.stableVAOFreeAttrib or nil)
+		end
 	end
 
 	if iT.indextoUnitID then
@@ -1773,6 +1868,8 @@ local InstanceVBOTableModule = {
 	makeInstanceVBOTable = makeInstanceVBOTable,
 	clearInstanceTable = clearInstanceTable,
 	makeVAOandAttach = makeVAOandAttach,
+	stabilizeVAO = stabilizeVAO,
+	stabilizeInstanceTableVAO = stabilizeInstanceTableVAO,
 	locateInvalidUnits = locateInvalidUnits,
 	pushElementInstance = pushElementInstance,
 	popElementInstance = popElementInstance,
