@@ -373,6 +373,18 @@ local function DrawSelections(preUnit)
 	if hasBadCulling then
 		gl.Culling(false)
 	end
+	if hoverSelectionVBO.usedElements == 0 and localSelectionVBO.usedElements == 0
+			and otherSelectionVBO.usedElements == 0 then
+		-- Nothing to draw: skip the shader and the two stencil-only clears of the (multisampled)
+		-- depth/stencil buffer, but leave the same stencil state as below. The stencil is 0 on
+		-- entry (engine clear at the start of the world pass; every stencil user ends with a clear
+		-- or zeroes what it set), so the clears would not change it.
+		glStencilFunc(GL_ALWAYS, 1, 1)
+		glStencilTest(false)
+		glStencilMask(255)
+		glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP)
+		return
+	end
 
 	selectionShader:Activate()
 

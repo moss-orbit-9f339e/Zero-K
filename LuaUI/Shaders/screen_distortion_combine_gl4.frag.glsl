@@ -41,9 +41,9 @@ void main(void) {
     distortion.rgb = distortion.rgb;
     distortion.rg = (1536.0 * distortion.rg) * inverseScreenResolution;
     if (length(distortion.rg) < 0.01) {
-        // Bail early if no real distortion is present
-        gl_FragColor = vec4(0.0);
-        return;
+        // Bail early if no real distortion is present. Writing alpha 0 with
+        // SRC_ALPHA/ONE_MINUS_SRC_ALPHA left dst unchanged anyway; discard skips the blend.
+        discard;
     }
     // Declare the UV sets and final screen color
     vec2 offsetUV1;

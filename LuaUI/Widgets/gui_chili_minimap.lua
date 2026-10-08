@@ -1282,7 +1282,16 @@ function widget:DrawScreen()
 		gl.Uniform(boundsLoc, (px/vsx), ((py - lh)/vsy), (lw/vsx), (lh/vsy))
 		gl.Uniform(screenLoc, vsx, vsy)
 		-- Spring.Echo("Bounds: "..(window.x + lx)/vsx..", "..(window.y + ly)/vsy..", "..((window.x + lx) + lw)/vsx..", "..((window.y + ly) + lh)/vsy)
+		-- fadeShader outputs alpha 0 outside 'bounds', which leaves the screen unchanged with this
+		-- blend, so scissor the full-screen quad to bounds + 2 px. The quad is the same, so every
+		-- pixel inside gets the same interpolated values as before. px, py, lw, lh and vsx, vsy are
+		-- in UI units (WG.uiScale); gl.Scissor takes framebuffer pixels, so scale the normalized
+		-- bounds by the real view size.
+		local rvx, rvy = gl.GetViewSizes()
+		local sx, sy = math.floor(px / vsx * rvx) - 2, math.floor((py - lh) / vsy * rvy) - 2
+		gl.Scissor(sx, sy, math.ceil((px + lw) / vsx * rvx) + 2 - sx, math.ceil(py / vsy * rvy) + 2 - sy)
 		gl.TexRect(-1-0.25/vsx,1+0.25/vsy,1+0.25/vsx,-1-0.25/vsy)
+		gl.Scissor(false)
 
 		gl.Texture(0, false)
 		gl.Blending(false)
