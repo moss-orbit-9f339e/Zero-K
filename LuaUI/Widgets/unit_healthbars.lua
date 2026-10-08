@@ -659,21 +659,25 @@ local function GetBarDrawer()
 	end
 
 	local brightClr = {}
+	-- Background + progress quads of one bar in a single glBeginEnd (same vertices, same order).
+	local function DrawBarQuads(drawBackground, progress_pos, top, offsetY, width, bgTop, bgBottom, color)
+		if drawBackground then
+			DrawGradient(progress_pos, top, width, offsetY, bgTop, bgBottom)
+		end
+		DrawGradient(-width, top, progress_pos, offsetY, brightClr, color)
+	end
+
 	local function DrawUnitBar(offsetY, percent, color)
 		brightClr[1] = color[1]*1.5; brightClr[2] = color[2]*1.5; brightClr[3] = color[3]*1.5; brightClr[4] = color[4]
 		local progress_pos = -barWidth + barWidth*2*percent
 		local bar_Height  = barHeight+offsetY
-		if percent < 1 then
-			glBeginEnd(GL_QUADS, DrawGradient, progress_pos, bar_Height, barWidth, offsetY, bkTop, bkBottom)
-		end
-		glBeginEnd(GL_QUADS, DrawGradient, -barWidth, bar_Height, progress_pos, offsetY, brightClr, color)
+		glBeginEnd(GL_QUADS, DrawBarQuads, percent < 1, progress_pos, bar_Height, offsetY, barWidth, bkTop, bkBottom, color)
 	end
 
 	local function DrawFeatureBar(offsetY, percent, color)
 		brightClr[1] = color[1]*1.5; brightClr[2] = color[2]*1.5; brightClr[3] = color[3]*1.5; brightClr[4] = color[4]
 		local progress_pos = -featureBarWidth+featureBarWidth*2*percent
-		glBeginEnd(GL_QUADS, DrawGradient, progress_pos, featureBarHeight+offsetY, featureBarWidth, offsetY, fbkTop, fbkBottom)
-		glBeginEnd(GL_QUADS, DrawGradient, -featureBarWidth, featureBarHeight+offsetY, progress_pos, offsetY, brightClr, color)
+		glBeginEnd(GL_QUADS, DrawBarQuads, true, progress_pos, featureBarHeight+offsetY, offsetY, featureBarWidth, fbkTop, fbkBottom, color)
 	end
 
 	local externalFunc = {}
@@ -695,18 +699,40 @@ local function GetBarDrawer()
 		end
 	end
 
+	local invertKey   = {} -- status -> "invert_" .. status
+	local percentText = {} -- floor(percent*100) -> "NN%"
+
 	function externalFunc.AddPercentBar(status, percent, color, textOverride)
 		barsN = barsN + 1
 		local barInfo = bars[barsN]
 		local progress = percent
-		if options["invert_" .. status].value then
+		local key = invertKey[status]
+		if not key then
+			key = "invert_" .. status
+			invertKey[status] = key
+		end
+		if options[key].value then
 			progress = 1 - progress
 		end
 		if barInfo then
 			barInfo.title    = addTitle and messages[status]
 			barInfo.progress = progress
 			barInfo.color    = color or barColors[status]
-			barInfo.text     = addPercent and (textOverride or floor(percent*100) .. '%')
+			local text = addPercent
+			if addPercent then
+				text = textOverride
+				if not text then
+					local p = floor(percent*100)
+					text = percentText[p]
+					if not text then
+						text = p .. '%'
+						if p > 0 and p <= 100 then -- Bound the cache; preserve signed zero and unusual values.
+							percentText[p] = text
+						end
+					end
+				end
+			end
+			barInfo.text     = text
 		end
 	end
 
@@ -910,7 +936,7 @@ do
 		local emp = (paralyzeDamage or 0)/empHP
 		local hp  = (health or 0)/maxHealth
 
-		if Spring.GetUnitIsDead(unitID) then
+		if (drawFullHealthBars or hp < 1) and Spring.GetUnitIsDead(unitID) then
 			health = false
 		end
 
@@ -1032,7 +1058,7 @@ do
 		
 		--// Teleport progress
 		local TeleportEnd = GetUnitRulesParam(unitID, "teleportend")
-		local TeleportCost = GetUnitRulesParam(unitID, "teleportcost")
+		local TeleportCost = TeleportEnd and GetUnitRulesParam(unitID, "teleportcost")
 		if TeleportEnd and TeleportCost and TeleportEnd >= 0 then
 			local prog
 			if TeleportEnd > 1 then
