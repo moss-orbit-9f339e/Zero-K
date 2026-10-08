@@ -3374,10 +3374,27 @@ local function DoSmoothDirectly(
 	local structJ = movestructures and {}
 	local IsPositionTerraformable = GG.Terraform.IsPositionTerraformable
 	
+	-- IsPositionTerraformable(i, j) is inlined in the loop below: HasStructure is a lookup in
+	-- structureAreaMap[1], which only (de)registering structures changes and nothing in this loop does,
+	-- and map_AllowPositionTerraform is the map border predicate set once in Initialize. It is still
+	-- called for exactly the same positions in the same order.
+	local structureRows = structureAreaMap[1]
+	local AllowPositionTerraform = GG.map_AllowPositionTerraform
+	
 	for i = sx - smoothradius, sx + smoothradius,8 do
+		local structureRow = structureRows and structureRows[i]
+		local dxSQ = (i - x)^2 -- same value the inner loop used to recompute per point
 		for j = sz - smoothradius, sz + smoothradius,8 do
-			if IsPositionTerraformable(i, j) then
-				local disSQ = (i - x)^2 + (j - z)^2
+			local terraformable
+			if structureRow and structureRow[j] then
+				terraformable = false
+			elseif AllowPositionTerraform then
+				terraformable = AllowPositionTerraform(i, j)
+			else
+				terraformable = true
+			end
+			if terraformable then
+				local disSQ = dxSQ + (j - z)^2
 				if disSQ <= smoothradiusSQ then
 					if smoothExponent then
 						local newHeight = (groundHeight - spGetGroundHeight(i,j)) * maxSmooth * FalloffFunc(disSQ, smoothradiusSQ, smoothExponent)
