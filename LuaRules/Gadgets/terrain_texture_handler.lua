@@ -204,6 +204,35 @@ local function drawCopySquare()
 	gl.TexRect(-1,1,1,-1)
 end
 
+-- The restore and apply loops below render each square's blocks in one gl.RenderToTexture call
+-- instead of one call per block: the same TexRects into the same texture in the same order, since
+-- RenderToTexture only binds the texture's FBO and sets the same viewport and identity matrices
+-- around its callback, and restores them afterwards.
+local function drawRestoreBlocks(square, sx, sz)
+	local data = square.data
+	for j = 1, square.count do
+		local x = data[j].x
+		local z = data[j].z
+		local sourceX = (x-sx*SQUARE_SIZE)/SQUARE_SIZE
+		local sourceZ = (z-sz*SQUARE_SIZE)/SQUARE_SIZE
+		local sourceSize = BLOCK_SIZE/SQUARE_SIZE
+		drawTextureOnSquare(x-sx*SQUARE_SIZE,z-sz*SQUARE_SIZE, BLOCK_SIZE, sourceX, sourceZ, sourceSize)
+	end
+end
+
+local function drawApplyBlocks(data, first, last, tex)
+	for i = first, last do
+		local block = data[i]
+		local x = block.x
+		local z = block.z
+		local sx = block.sx
+		local sz = block.sz
+		local dx = (x/tex.size)%1
+		local dz = (z/tex.size)%1
+		drawTextureOnSquare(x-sx*SQUARE_SIZE,z-sz*SQUARE_SIZE, BLOCK_SIZE, dx, dz, tex.tile)
+	end
+end
+
 function gadget:DrawGenesis()
 	--Process gadget:UnsyncedHeightMapUpdate() data--
 	local updateCount = 1
@@ -352,13 +381,8 @@ function gadget:DrawGenesis()
 		local sz = square.sz
 		if mapTex[sx][sz] then
 			gl.Texture(mapTex[sx][sz].orig)
-			for j = 1, square.count do
-				local x = square.data[j].x
-				local z = square.data[j].z
-				local sourceX = (x-sx*SQUARE_SIZE)/SQUARE_SIZE
-				local sourceZ = (z-sz*SQUARE_SIZE)/SQUARE_SIZE
-				local sourceSize = BLOCK_SIZE/SQUARE_SIZE
-				gl.RenderToTexture(mapTex[sx][sz].cur, drawTextureOnSquare, x-sx*SQUARE_SIZE,z-sz*SQUARE_SIZE, BLOCK_SIZE, sourceX, sourceZ, sourceSize)
+			if square.count > 0 then
+				gl.RenderToTexture(mapTex[sx][sz].cur, drawRestoreBlocks, square, sx, sz)
 			end
 		end
 	end
@@ -369,17 +393,22 @@ function gadget:DrawGenesis()
 			local toTex = toTexture[t]
 			local tex = texturePool[t]
 			gl.Texture(tex.texture)
-			for i = 1, toTex.count do
-				local block = toTex.data[i]
-				local x = block.x
-				local z = block.z
+			local data = toTex.data
+			local count = toTex.count
+			local i = 1
+			while i <= count do
+				-- consecutive blocks on the same square share one RenderToTexture
+				local block = data[i]
 				local sx = block.sx
 				local sz = block.sz
-				local dx = (x/tex.size)%1
-				local dz = (z/tex.size)%1
-				if mapTex[sx][sz] then
-					gl.RenderToTexture(mapTex[sx][sz].cur, drawTextureOnSquare, x-sx*SQUARE_SIZE,z-sz*SQUARE_SIZE, BLOCK_SIZE, dx, dz, tex.tile)
+				local last = i
+				while last < count and data[last + 1].sx == sx and data[last + 1].sz == sz do
+					last = last + 1
 				end
+				if mapTex[sx][sz] then
+					gl.RenderToTexture(mapTex[sx][sz].cur, drawApplyBlocks, data, i, last, tex)
+				end
+				i = last + 1
 			end
 		end
 	end
