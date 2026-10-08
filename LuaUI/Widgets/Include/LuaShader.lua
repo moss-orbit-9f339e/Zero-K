@@ -721,7 +721,10 @@ function LuaShader:Compile(suppresswarnings)
 		self:ShowWarning(shLog)
 	end
 
-	local uniforms = self.uniforms
+	-- A (re)compiled program starts with its default uniform values and possibly new locations:
+	-- drop every cached location and value, including dynamically looked up "name[i]" entries.
+	local uniforms = {}
+	self.uniforms = uniforms
 	for idx, info in ipairs(gl.GetActiveUniforms(shaderObj)) do
 		local uniName = string.gsub(info.name, "%[0%]", "") -- change array[0] to array
 		uniforms[uniName] = {
@@ -877,7 +880,7 @@ local function isUpdateRequiredNoTable(uniform, u1, u2, u3, u4)
 	
 	if u1 and cachedValues[1] ~= u1 then 
 		update = true 
-		cachedValues[1] = val 	
+		cachedValues[1] = u1 	
 	end 
 	if u2 and cachedValues[2] ~= u2 then 
 		update = true 
@@ -893,6 +896,16 @@ local function isUpdateRequiredNoTable(uniform, u1, u2, u3, u4)
 	end 
 
 	return update
+end
+
+-- The *Always setters bypass the comparison but must still record what the program now holds,
+-- otherwise a later SetUniform with the previously cached value would be skipped wrongly.
+local function storeUniformCacheNoTable(uniform, u1, u2, u3, u4)
+	local cachedValues = uniform.values
+	cachedValues[1] = u1
+	cachedValues[2] = u2
+	cachedValues[3] = u3
+	cachedValues[4] = u4
 end
 -----------------============ End of friend LuaShader functions ============-----------------
 
@@ -924,6 +937,7 @@ function LuaShader:SetUniformAlways(name, u1, u2, u3, u4)
 	if not uniform then
 		return false
 	end
+	storeUniformCacheNoTable(uniform, u1, u2, u3, u4)
 	return setUniformAlwaysImpl(uniform, u1, u2, u3, u4)
 end
 
@@ -965,6 +979,7 @@ function LuaShader:SetUniformIntAlways(name,  u1, u2, u3, u4)
 	if not uniform then
 		return false
 	end
+	storeUniformCacheNoTable(uniform, u1, u2, u3, u4)
 	return setUniformIntAlwaysImpl(uniform,  u1, u2, u3, u4)
 end
 
