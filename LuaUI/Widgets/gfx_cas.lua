@@ -132,6 +132,12 @@ local function MakeShader()
 		widgetHandler:RemoveWidget()
 		return
 	end
+	-- An empty VAO is rebuilt by the engine on every draw; dummy buffers keep
+	-- it. The shader takes its 3 vertices from gl_VertexID and has no inputs, so attributes 6
+	-- (dummy vertex buffer, 3 elements for the 3-vertex draw) and 7 (dummy instance) are free.
+	if gl.InstanceVBOTable and gl.InstanceVBOTable.stabilizeVAO then
+		gl.InstanceVBOTable.stabilizeVAO(fullTexQuad, false, false, false, 6, 3)
+	end
 end
 
 local function DisableShader()
