@@ -9,6 +9,7 @@ SkinHandler = {}
 local SkinUtilsEnv = {}
 setmetatable(SkinUtilsEnv,{__index = getfenv()})
 VFS.Include(CHILI_DIRNAME .. "headers/skinutils.lua", SkinUtilsEnv)
+SkinHandler.utilsEnv = SkinUtilsEnv --// used by the render cache to recognise the skins' draw functions
 
 --//=============================================================================
 --// translates the skin's FileNames to the correct FilePaths
