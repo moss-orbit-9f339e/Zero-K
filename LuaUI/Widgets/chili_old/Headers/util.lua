@@ -124,11 +124,18 @@ function PushScissor(x,y,w,h)
   if (bottom > curScissor[4]) then bottom = curScissor[4] end
   if (x < curScissor[1]) then x = curScissor[1] end
   if (y < curScissor[2]) then y = curScissor[2] end
-	
-  curScissor = {x,y,right,bottom}
+
   stackN = stackN + 1
-  stack[stackN] = curScissor
-  
+  --// reuse the rect tables of earlier pushes (saves one table per drawn container)
+  local s = stack[stackN]
+  if s then
+    s[1], s[2], s[3], s[4] = x, y, right, bottom
+  else
+    s = {x,y,right,bottom}
+    stack[stackN] = s
+  end
+  curScissor = s
+
   local width = right  - x
   local height = bottom - y
   if (width < 0) or (height < 0) then
@@ -140,7 +147,6 @@ end
 
 
 function PopScissor()
-  stack[stackN] = nil
   stackN = stackN - 1
   curScissor = stack[stackN]
   if (stackN == 1) then

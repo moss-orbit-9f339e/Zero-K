@@ -859,14 +859,23 @@ end
 --//=============================================================================
 
 
+local ObjectParentToLocal = Object.ParentToLocal
+
 function Object:HitTest(x,y)
   if not self.disableChildrenHitTest then
     local children = self.children
     for i=1,#children do
       local c = children[i]
       if (c) then
-        local cx,cy = c:ParentToLocal(x,y)
-        if InLocalRect(cx,cy,c.width,c.height) then
+        --// c:ParentToLocal and InLocalRect inlined (same operations and order);
+        --// the screen tests all its children every frame in IsAbove
+        local cx,cy
+        if (c.ParentToLocal == ObjectParentToLocal) then
+          cx,cy = x - c.x, y - c.y
+        else
+          cx,cy = c:ParentToLocal(x,y)
+        end
+        if (cx>=0)and(cy>=0)and(cx<=c.width)and(cy<=c.height) then
           local obj = c:HitTest(cx,cy)
           if (obj) then
             return obj
