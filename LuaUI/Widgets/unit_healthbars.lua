@@ -1008,12 +1008,17 @@ do
 		
 		--// PARALYZE
 		local paraTime = false
-		local stunned = GetUnitIsStunned(unitID)
+		local stunned = false
+		if ((emp > 0) and (emp < 1e8)) or gatherOverlays then
+			stunned = GetUnitIsStunned(unitID)
+		end
 		if (emp > 0) and(emp < 1e8) then
 			stunned = stunned and paralyzeDamage >= empHP
 			if (stunned) then
 				paraTime = (paralyzeDamage-empHP)/(maxHealth*empDecline)
-				paraUnits[#paraUnits+1] = unitID
+				if gatherOverlays then
+					paraUnits[#paraUnits+1] = unitID
+				end
 				barDrawer.AddDurationBar("paralyze", paraTime)
 			else
 				if (emp > 1) then
@@ -1035,7 +1040,7 @@ do
 				local disarmTime = (disarmFrame - gameFrame - 1200)/gameSpeed
 				if (not paraTime) or disarmTime > paraTime + 0.5 then
 					barDrawer.AddDurationBar("disarm", disarmTime)
-					if not stunned then
+					if gatherOverlays and not stunned then
 						disarmUnits[#disarmUnits+1] = unitID
 					end
 				end
@@ -1151,7 +1156,7 @@ do
 			if reloadFrame and reloadFrame > gameFrame then
 				local scriptLoaded = GetUnitRulesParam(unitID, "scriptLoaded") or ci.scriptBurst
 				reload = Spring.GetUnitRulesParam(unitID, "scriptReloadPercentage") or (1 - ((reloadFrame - gameFrame)/gameSpeed) / ci.scriptReload)
-				local barText = string.format("%i/%i", scriptLoaded, ci.scriptBurst) -- .. ' | ' .. floor(reload*100) .. '%'
+				local barText = addPercent and string.format("%i/%i", scriptLoaded, ci.scriptBurst) -- .. ' | ' .. floor(reload*100) .. '%'
 				if (reload >= 0) then
 					barDrawer.AddPercentBar("reload", reload, false, barText)
 				end
@@ -1170,7 +1175,7 @@ do
 			if slowState > 0.5 then
 				barDrawer.AddDurationBar("slow", (slowState - 0.5)*25)
 			else
-				barDrawer.AddPercentBar("slow", slowState*2, false, floor(slowState*100) .. '%')
+				barDrawer.AddPercentBar("slow", slowState*2, false, addPercent and (floor(slowState*100) .. '%'))
 			end
 		end
 		
@@ -1188,7 +1193,7 @@ do
 			if (jumpReload and (jumpReload > 0) and (jumpReload < 1)) then
 				barDrawer.AddPercentBar("jump", jumpReload)
 			elseif ci.jumpCharges and jumpReload and (jumpReload < ci.jumpCharges) and (jumpReload >= 1) then
-				local barText = string.format("%i/%i", math.floor(jumpReload), ci.jumpCharges)
+				local barText = addPercent and string.format("%i/%i", math.floor(jumpReload), ci.jumpCharges)
 				barDrawer.AddPercentBar("jump_charge", (jumpReload - 1) / (ci.jumpCharges - 1), false, barText)
 			end
 		end
