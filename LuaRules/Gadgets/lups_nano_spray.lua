@@ -223,23 +223,67 @@ local factionsNanoFx = {
 
 local builders = {}
 
-local function BuilderFinished(unitID)
-	builders[#builders+1] = unitID
+-- A builder is updated on the frames with (unitID + frame) % 30 == 0. GameFrame used to test
+-- every builder every frame; buckets[r] holds the builders with unitID % 30 == r in the order
+-- of the builders array, so a frame visits exactly the builders it used to update, in the same
+-- order. builderIndex[unitID] is the builder's position in the builders array.
+local UPDATE_PERIOD = 30
+local buckets = {}
+for r = 0, UPDATE_PERIOD - 1 do
+	buckets[r] = {}
 end
+local builderIndex = {}
 
-local function BuilderDestroyed(unitID)
-	for i=1,#builders do
-		if (builders[i] == unitID) then
-			builders[i] = builders[#builders]
+local function BucketRemove(bucket, unitID)
+	for k = 1, #bucket do
+		if bucket[k] == unitID then
+			table.remove(bucket, k)
+			return
 		end
 	end
-	builders[#builders] = nil
+end
+
+local function BucketInsert(bucket, unitID, index)
+	local pos = #bucket + 1
+	for k = 1, #bucket do
+		if builderIndex[bucket[k]] > index then
+			pos = k
+			break
+		end
+	end
+	table.insert(bucket, pos, unitID)
+end
+
+local function BuilderFinished(unitID)
+	builders[#builders+1] = unitID
+	builderIndex[unitID] = #builders
+	local bucket = buckets[unitID % UPDATE_PERIOD]
+	bucket[#bucket + 1] = unitID
+end
+
+-- callers guarantee unitID is in the array exactly once (registeredBuilders)
+local function BuilderDestroyed(unitID)
+	local n = #builders
+	local i = builderIndex[unitID]
+	local last = builders[n]
+	-- the last builder takes the removed one's place, as before
+	builders[i] = last
+	builders[n] = nil
+	builderIndex[unitID] = nil
+	BucketRemove(buckets[unitID % UPDATE_PERIOD], unitID)
+	if last ~= unitID then
+		builderIndex[last] = i
+		local bucket = buckets[last % UPDATE_PERIOD]
+		BucketRemove(bucket, last)
+		BucketInsert(bucket, last, i)
+	end
 end
 
 function gadget:GameFrame(frame)
-	for i = 1, #builders do
-		local unitID = builders[i]
-		if ((unitID + frame) % 30 < 1) then --// only update once per second
+	local bucket = buckets[(-frame) % UPDATE_PERIOD]
+	for i = 1, #bucket do
+		local unitID = bucket[i]
+		do --// only update once per second
 			local strength = (spGetUnitCurrentBuildPower(unitID) or 0)*(spGetUnitRulesParam(unitID, "totalEconomyChange") or 1) -- * 16
 			if (strength > 0) then
 				local targetType, target, isFeature = Spring.Utilities.GetUnitNanoTarget(unitID)
