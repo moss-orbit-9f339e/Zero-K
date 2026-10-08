@@ -247,6 +247,27 @@ local tf
 
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
+-- Options
+
+options_path = 'Settings/HUD Panels/Extras'
+options = {
+	renderCache = {
+		name = 'Cache Interface Windows',
+		desc = 'Draws interface windows that have not changed from a texture instead of redrawing them every frame. Saves CPU time. Blending can differ from direct drawing by one colour step (1/255).',
+		type = 'bool',
+		value = false,
+		advanced = true,
+		noHotkey = true,
+		OnChange = function(self)
+			if Chili then
+				Chili.RenderCache.SetEnabled(self.value, screen0raw)
+			end
+		end,
+	},
+}
+
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 -- Chili's location
 
 local function GetDirectory(filepath)
@@ -273,6 +294,7 @@ function widget:Initialize()
 	WG.Chili = Chili
 	WG.Chili.Screen0 = screen0
 	screen0raw = Chili.UnlinkSafe(screen0)
+	Chili.RenderCache.SetEnabled(options.renderCache.value, screen0raw)
 
 	--// do this after the export to the WG table!
 	--// because other widgets use it with `parent=Chili.Screen0`,
@@ -282,6 +304,9 @@ end
 
 function widget:Shutdown()
 	--table.clear(Chili) the Chili table also is the global of the widget so it contains a lot more than chili's controls (pairs,select,...)
+	if Chili and Chili.RenderCache then
+		Chili.RenderCache.FreeAll()
+	end
 	WG.Chili = nil
 end
 
@@ -297,13 +322,18 @@ function widget:DrawScreen()
 	--// the screen is called directly instead of through the SafeWrap'd link,
 	--// which builds a wrapper closure plus an xpcall per method lookup
 	if screen0raw.children[1] then
-		gl.PushMatrix()
+		if Chili.ChiliRenderCache then
 			local vsx,vsy = gl.GetViewSizes()
-			gl.Translate(0,vsy,0)
-			gl.Scale(1,-1,1)
-			gl.Scale(WG.uiScale,WG.uiScale,1)
-			Chili.SafeCall(screen0raw.Draw, screen0raw)
-		gl.PopMatrix()
+			Chili.SafeCall(screen0raw.DrawCached, screen0raw, vsx, vsy, WG.uiScale)
+		else
+			gl.PushMatrix()
+				local vsx,vsy = gl.GetViewSizes()
+				gl.Translate(0,vsy,0)
+				gl.Scale(1,-1,1)
+				gl.Scale(WG.uiScale,WG.uiScale,1)
+				Chili.SafeCall(screen0raw.Draw, screen0raw)
+			gl.PopMatrix()
+		end
 	end
 	gl.Color(1,1,1,1)
 end

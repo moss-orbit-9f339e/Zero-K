@@ -49,8 +49,14 @@ local function _DrawTextureAspect(x,y,w,h ,tw,th, flipy)
   gl.TexRect(x,y,right,bottom,false,flipy)
 end
 
+local IsDynamicTexture = RenderCache.IsDynamicTexture
+
 function Image:DrawControl()
   if (not (self.file or self.file2)) then return end
+  if ChiliRenderCache and (IsDynamicTexture(self.file) or IsDynamicTexture(self.file2)) then
+    --// the texture may change without any invalidation
+    RenderCache.MarkDynamic(self)
+  end
   gl.Color(self.color)
 
   if (self.keepAspect) then

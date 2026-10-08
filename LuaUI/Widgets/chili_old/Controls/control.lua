@@ -131,6 +131,8 @@ function Control:Dispose(...)
     gl.DeleteList(self._all_dlist)
     self._all_dlist = nil
   end
+  self._allDListDirty = nil
+  RenderCache.Free(self)
   if (self._children_dlist) then
     gl.DeleteList(self._children_dlist)
     self._children_dlist = nil
@@ -828,7 +830,9 @@ function Control:_UpdateOwnDList()
       self._own_dlist = nil
     end
 
+    ChiliCompilingList = true
     self._own_dlist = gl.CreateList(self.DrawControl, self)
+    ChiliCompilingList = false
 
     self._needRedraw = nil
   end
@@ -854,10 +858,30 @@ function Control:_UpdateAllDList()
     gl.DeleteList(self._all_dlist)
     self._all_dlist = nil
   end
-  self._all_dlist = gl.CreateList(self.DrawForList,self)
 
-  if (self.parent)and(not self.parent._needRedraw)and(self.parent._UpdateAllDList)and(self.parent.useDList) then
-    TaskHandler.RequestInstantUpdate(self.parent)
+  local parent = self.parent
+  local parentUsesDList = parent and parent._UpdateAllDList and parent.useDList
+
+  if ChiliRenderCache then
+    --// Only a control that is drawn with Draw() (i.e. whose parent doesn't
+    --// compile display lists, normally the children of the screen) ever calls
+    --// its _all_dlist: a parent's list is recorded with DrawForList(), which
+    --// recurses into the children's DrawForList() and only calls their
+    --// _own_dlist. So the intermediate lists are skipped, and the top-level
+    --// list is compiled lazily in Draw() when it is drawn directly (it is not
+    --// needed when RenderCache draws the control from a cached texture).
+    --// Draw() of a control without _all_dlist draws it immediately, which
+    --// yields the same output.
+    if not parentUsesDList then
+      self._allDListDirty = true
+    end
+  else
+    self._allDListDirty = nil
+    self._all_dlist = gl.CreateList(self.DrawForList,self)
+  end
+
+  if (parentUsesDList)and(not parent._needRedraw) then
+    TaskHandler.RequestInstantUpdate(parent)
   end
 end
 
@@ -1069,6 +1093,13 @@ end
 
 
 function Control:Draw()
+  if (self._allDListDirty) then
+    self._allDListDirty = nil
+    if (self._all_dlist) then
+      gl.DeleteList(self._all_dlist)
+    end
+    self._all_dlist = gl.CreateList(self.DrawForList,self)
+  end
   if (self._all_dlist) then
     gl.CallList(self._all_dlist);
     return;

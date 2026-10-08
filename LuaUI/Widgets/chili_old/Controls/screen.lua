@@ -112,6 +112,13 @@ end
 
 --//=============================================================================
 
+--// draws the children like Draw(), using the render cache
+function Screen:DrawCached(vsx, vsy, uiScale)
+  RenderCache.DrawScreen(self, vsx, vsy, uiScale)
+end
+
+--//=============================================================================
+
 function Screen:Resize(w,h)
 	self.width = math.ceil(w)
 	self.height = math.ceil(h)

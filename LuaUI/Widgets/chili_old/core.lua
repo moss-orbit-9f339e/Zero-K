@@ -11,6 +11,7 @@ local includes = {
   "handlers/themehandler.lua",
   "handlers/fonthandler.lua",
   "handlers/texturehandler.lua",
+  "handlers/rendercache.lua",
 
   "controls/object.lua",
   "controls/font.lua",

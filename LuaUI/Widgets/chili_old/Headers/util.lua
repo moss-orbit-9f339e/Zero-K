@@ -1,5 +1,12 @@
 --//=============================================================================
 
+--// render cache (handlers/rendercache.lua) on/off, switched by api_chili.lua
+--// via RenderCache.SetEnabled
+ChiliRenderCache = false
+ChiliCompilingList = false --// true while a control's own display list is compiled
+
+--//=============================================================================
+
 function IsTweakMode()
   return widgetHandler.tweakMode
 end
@@ -117,6 +124,34 @@ local curScissor = {0,0,1e9,1e9}
 local stack = {curScissor}
 local stackN = 1
 
+--// Scissor rects are computed in screen pixels. When chili renders a control
+--// into an offscreen texture (see handlers/rendercache.lua) the texture origin
+--// sits at screen pixel (scissorOffsetX, scissorOffsetY), so the final integer
+--// rect is shifted by that (integer) offset. gl.Scissor truncates its float
+--// arguments towards zero; we truncate first and then shift, so the covered
+--// pixels are exactly the ones covered on screen.
+local scissorOffsetX, scissorOffsetY = 0, 0
+local mfloor, mceil = math.floor, math.ceil
+
+local function ScissorTrunc(v)
+  if (v >= 0) then
+    return mfloor(v)
+  end
+  return mceil(v)
+end
+
+local function ApplyScissor(x, y, w, h)
+  if (scissorOffsetX == 0) and (scissorOffsetY == 0) then
+    gl.Scissor(x, y, w, h)
+  else
+    gl.Scissor(ScissorTrunc(x) - scissorOffsetX, ScissorTrunc(y) - scissorOffsetY, ScissorTrunc(w), ScissorTrunc(h))
+  end
+end
+
+function SetScissorOffset(x, y)
+  scissorOffsetX, scissorOffsetY = x or 0, y or 0
+end
+
 function PushScissor(x,y,w,h)
   local right = x+w
   local bottom = y+h
@@ -142,7 +177,7 @@ function PushScissor(x,y,w,h)
     --// scissor is null space -> don't render at all
     return false
   end
-  gl.Scissor(x,y,width,height)
+  ApplyScissor(x,y,width,height)
 end
 
 
@@ -156,7 +191,7 @@ function PopScissor()
 	local w = right  - x
 	local h = bottom - y
 	if w >= 0 and h >= 0 then
-      gl.Scissor(x,y,w,h)
+      ApplyScissor(x,y,w,h)
 	end
   end
 end

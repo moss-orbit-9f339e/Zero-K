@@ -226,6 +226,29 @@ end
 
 --//=============================================================================
 
+--// With the render cache (rendercache.lua) controls may be drawn into an
+--// offscreen texture that keeps "transmittance" in its alpha channel, which
+--// needs a separate alpha blend function. font:End() would override it with
+--// glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA), so in that mode text uses the
+--// caller's blending (font:Begin(true)); chili sets that standard blend itself
+--// whenever it draws straight to the screen in that mode.
+--// Fonts used while compiling display lists may get new glyphs whose atlas
+--// upload the engine defers (no uploads inside a display list); they are
+--// remembered here and flushed before anything is rendered into a cache.
+local pendingFontUploads = {}
+FontHandler.pendingUploads = pendingFontUploads
+
+local function BeginFont(font)
+  if ChiliRenderCache then
+    if ChiliCompilingList then
+      pendingFontUploads[font] = true
+    end
+    font:Begin(true)
+  else
+    font:Begin()
+  end
+end
+
 function Font:Draw(text, x, y, align, valign)
   if (not text) then
     return
@@ -242,7 +265,7 @@ function Font:Draw(text, x, y, align, valign)
 
   gl.PushMatrix()
     gl.Scale(1,-1,1)
-    font:Begin()
+    BeginFont(font)
       font:SetTextColor(self.color)
       font:SetOutlineColor(self.outlineColor)
       font:SetAutoOutlineColor(self.autoOutlineColor)
@@ -271,7 +294,7 @@ function Font:DrawInBox(text, x, y, w, h, align, valign)
 
   gl.PushMatrix()
     gl.Scale(1,-1,1)
-    font:Begin()
+    BeginFont(font)
       font:SetTextColor(self.color)
       font:SetOutlineColor(self.outlineColor)
       font:SetAutoOutlineColor(self.autoOutlineColor)
