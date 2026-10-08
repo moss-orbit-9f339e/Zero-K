@@ -1145,12 +1145,46 @@ local function calcMainMexDrawList()
 	glColor(1,1,1,1)
 end
 
-local function calcMinimapMexDrawList()
+-- The minimap circles are drawn as plain line loops instead of through
+-- gl.Utilities.DrawCircle (glVolumes DrawVolume: two passes and ~20 state changes per circle).
+-- DrawInMiniMap only runs while the engine renders the minimap into its own FBO
+-- (CMiniMap::UpdateTextureCache), which has a colour attachment only. Without depth and stencil
+-- buffers the depth and stencil tests always pass and write nothing, so DrawVolume's first pass
+-- (colour mask off) has no effect and its second pass is a plain draw of the circle list. The
+-- plain path draws the same list geometry (DrawMyCircle(0, 0, 1, 35), as glVolumes' private
+-- circle list) through the same Translate/Scale, under the same second-pass state, and leaves the
+-- same state behind as the last DrawVolume call.
+local minimapCircleList
+
+local function DrawMinimapCirclePlain(x, y, radius)
+	glPushMatrix()
+	glTranslate(x, y, 0)
+	glScale(radius, radius, 1)
+	glCallList(minimapCircleList)
+	glPopMatrix()
+end
+
+local function calcMinimapMexDrawList(plainCircles)
 	if not WG.metalSpots then
 		return
 	end
 	if not glDrawCircle then
 		glDrawCircle = gl.Utilities.DrawCircle -- FIXME make utilities available early enough to do this in init
+	end
+	local drawCircle = glDrawCircle
+	plainCircles = plainCircles and (#WG.metalSpots > 0)
+	if plainCircles then
+		drawCircle = DrawMinimapCirclePlain
+		-- second-pass state of gl.Utilities.DrawVolume
+		gl.DepthMask(false)
+		if (gl.DepthClamp) then gl.DepthClamp(true) end
+		gl.StencilTest(true)
+		gl.Culling(GL.FRONT)
+		gl.DepthTest(false)
+		gl.ColorMask(true, true, true, true)
+		gl.StencilOp(GL.ZERO, GL.ZERO, GL.ZERO)
+		gl.StencilMask(1)
+		gl.StencilFunc(GL.NOTEQUAL, 0, 1)
 	end
 	
 	for i = 1, #WG.metalSpots do
@@ -1163,15 +1197,31 @@ local function calcMinimapMexDrawList()
 
 		glColor(0,0,0,1)
 		glLineWidth(width*2.0)
-		glDrawCircle(x, z, MINIMAP_DRAW_SIZE)
+		drawCircle(x, z, MINIMAP_DRAW_SIZE)
 		glLineWidth(width*0.8)
 		glColor(r,g,b,1.0)
 
-		glDrawCircle(x, z, MINIMAP_DRAW_SIZE)
+		drawCircle(x, z, MINIMAP_DRAW_SIZE)
+	end
+
+	if plainCircles then
+		-- what the last DrawVolume call leaves behind
+		if (gl.DepthClamp) then gl.DepthClamp(false) end
+		gl.StencilTest(false)
+		gl.Culling(false)
 	end
 	
 	glLineWidth(1.0)
 	glColor(1,1,1,1)
+end
+
+local function createMinimapMexDrawList()
+	local plainCircles = gl.Utilities and gl.Utilities.DrawMyCircle and true or false
+	if plainCircles and not minimapCircleList then
+		-- Created outside the list compile below (lists cannot be created while compiling one).
+		minimapCircleList = glCreateList(gl.Utilities.DrawMyCircle, 0, 0, 1, 35)
+	end
+	return glCreateList(calcMinimapMexDrawList, plainCircles)
 end
 
 DrawIncomeLabels = function()
@@ -1245,7 +1295,7 @@ function updateMexDrawList()
 		gl.DeleteList(minimapDrawList)
 	end
 	circleOnlyMexDrawList = glCreateList(calcMainMexDrawList)
-	minimapDrawList = glCreateList(calcMinimapMexDrawList)
+	minimapDrawList = createMinimapMexDrawList()
 	if not circleOnlyMexDrawList then
 		Spring.Echo("Warning: Failed to update mex draw list.")
 	end
@@ -1260,6 +1310,10 @@ function widget:Shutdown()
 		gl.DeleteList(minimapDrawList)
 	end
 	minimapDrawList = nil
+	if minimapCircleList then
+		gl.DeleteList(minimapCircleList)
+	end
+	minimapCircleList = nil
 	if incomeLabelList then
 		gl.DeleteList(incomeLabelList)
 	end
