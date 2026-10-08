@@ -170,12 +170,20 @@ function widget:Update(t)
   end
 end
 
+-- Ground heights around the last drawn quad. Consecutive trail samples of an idle cursor share
+-- one position, so they are reused within a frame (reset in DrawWorldPreUnit).
+local quadX, quadZ
+local gy_tl,gy_tr,gy_bl,gy_br,gy_t,gy_b,gy_l,gy_r
+
 local function DrawGroundquad(wx,gy,wz)
   -- get ground heights
-  local gy_tl,gy_tr = GetGroundHeight(wx-16,wz-16),GetGroundHeight(wx+16,wz-16)
-  local gy_bl,gy_br = GetGroundHeight(wx-16,wz+16),GetGroundHeight(wx+16,wz+16)
-  local gy_t,gy_b = GetGroundHeight(wx,wz-16),GetGroundHeight(wx,wz+16)
-  local gy_l,gy_r = GetGroundHeight(wx-16,wz),GetGroundHeight(wx+16,wz)
+  if (wx ~= quadX) or (wz ~= quadZ) then
+    quadX, quadZ = wx, wz
+    gy_tl,gy_tr = GetGroundHeight(wx-16,wz-16),GetGroundHeight(wx+16,wz-16)
+    gy_bl,gy_br = GetGroundHeight(wx-16,wz+16),GetGroundHeight(wx+16,wz+16)
+    gy_t,gy_b = GetGroundHeight(wx,wz-16),GetGroundHeight(wx,wz+16)
+    gy_l,gy_r = GetGroundHeight(wx-16,wz),GetGroundHeight(wx+16,wz)
+  end
 
   --topleft
   glTexCoord(0,0)
@@ -237,18 +245,15 @@ local function SetTeamColor(teamID,a)
 end
 
 
-function widget:DrawWorldPreUnit()
-  if Spring.IsGUIHidden() then return end
-  glDepthTest(true)
-  glTexture('LuaUI/Images/AlliedCursors.png')
-  glPolygonOffset(-7,-10)
-  local time = clock()
-
+-- Emits every cursor quad inside one glBeginEnd; colours are set per quad as before.
+local function DrawCursorQuads(time)
   for playerID,data in pairs(WG.alliedCursorsPos) do
-    local teamID = data[#data]
+    local dataLen = #data
+    local teamID = data[dataLen]
+    local lastX, lastZ, gy, inView
     for n=0,5 do
       local wx,wz = data[1],data[2]
-      local lastUpdatedDiff = time-data[#data-2] + n*0.025
+      local lastUpdatedDiff = time-data[dataLen-2] + n*0.025
 
       if (lastUpdatedDiff<sendPacketEvery) then
         local scale  = (1-(lastUpdatedDiff/sendPacketEvery))*numMousePos
@@ -259,18 +264,31 @@ function widget:DrawWorldPreUnit()
         wz = CubicInterpolate2(data[iscale*2+2],data[(iscale+1)*2+2],fscale)
       end
 
-      local gy = GetGroundHeight(wx,wz)
-      if (IsSphereInView(wx,gy,wz,16)) then
-        local r,g,b = GetTeamColor(teamID)
-        if (data[#data-1]) then --mouse pressed?
+      if (wx ~= lastX) or (wz ~= lastZ) then
+        lastX, lastZ = wx, wz
+        gy = GetGroundHeight(wx,wz)
+        inView = IsSphereInView(wx,gy,wz,16)
+      end
+      if (inView) then
+        if (data[dataLen-1]) then --mouse pressed?
           glColor(1,0,0,n*0.2)
         else
           SetTeamColor(teamID,n*0.2)
         end
-        glBeginEnd(GL_QUADS,DrawGroundquad,wx,gy,wz)
+        DrawGroundquad(wx,gy,wz)
       end
     end
   end
+end
+
+function widget:DrawWorldPreUnit()
+  if Spring.IsGUIHidden() then return end
+  glDepthTest(true)
+  glTexture('LuaUI/Images/AlliedCursors.png')
+  glPolygonOffset(-7,-10)
+  quadX, quadZ = nil, nil -- terrain may have changed since the last frame
+
+  glBeginEnd(GL_QUADS, DrawCursorQuads, clock())
 
   glPolygonOffset(false)
   glTexture(false)
