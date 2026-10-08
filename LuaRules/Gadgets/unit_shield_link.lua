@@ -360,9 +360,14 @@ function gadget:GameFrame(n)
 			for i = 1, unitList.count do
 				unitID = unitList[i]
 				unitData = shieldUnits[unitID]
-				on, unitCharge = spGetUnitShieldState(unitID, unitData.shieldNum)
 				chargeFlow = 0
-				attempt = 1
+				if unitData.enabled and unitData.neighborList.count >= 1 then
+					on, unitCharge = spGetUnitShieldState(unitID, unitData.shieldNum)
+					attempt = 1
+				else
+					-- The loop below would exit on its first test without reading on/unitCharge.
+					attempt = false
+				end
 				while attempt and attempt < 3 do
 					if on and unitCharge and unitData.enabled and unitData.neighborList.count >= 1 then
 						allyTeamID = unitData.allyTeamID
@@ -448,10 +453,17 @@ local spGetGameFrame       = Spring.GetGameFrame
 local shieldUnits = {}
 local shieldCount = 0
 
+-- "shield_link_unit" is only written by synced GameFrame code, so it is read at most once per sim frame
+-- (or after shieldUnits changes) instead of every draw frame for every shield unit.
+local linkCacheFrame = false
+local linkCount = 0
+local linkFrom, linkTo = {}, {}
+
 function gadget:UnitCreated(unitID, unitDefID)
 	if UnitDefs[unitDefID].shieldWeaponDef then
 		shieldCount = shieldCount + 1
 		shieldUnits[shieldCount] = unitID
+		linkCacheFrame = false
 	end
 end
 
@@ -461,6 +473,7 @@ function gadget:UnitDestroyed(unitID, unitDefID)
 			if shieldUnits[i] == unitID then
 				table.remove(shieldUnits,i)
 				shieldCount = shieldCount - 1
+				linkCacheFrame = false
 				break;
 			end
 		end
@@ -475,20 +488,44 @@ function gadget:Initialize()
 	end
 end
 
+local function UpdateLinkCache()
+	local frame = spGetGameFrame()
+	if frame == linkCacheFrame then
+		return
+	end
+	linkCacheFrame = frame
+	local count = 0
+	for i = 1, #shieldUnits do
+		local unitID = shieldUnits[i]
+		local connectedToUnitID = tonumber(spGetUnitRulesParam(unitID, "shield_link_unit") or -1)
+		if connectedToUnitID and connectedToUnitID >= 0 then
+			count = count + 1
+			linkFrom[count] = unitID
+			linkTo[count] = connectedToUnitID
+		end
+	end
+	linkCount = count
+end
+
+local function InLos(unitID, allyTeamID)
+	local los = spGetUnitLosState(unitID, allyTeamID, false)
+	return los and los.los
+end
+
 local function DrawFunc()
 	local unitID
 	local connectedToUnitID
 	local x1, y1, z1, x2, y2, z2
 	local spec, fullview = spGetSpectatingState()
 	local myTeam = spGetMyAllyTeamID()
-	for i=1, #shieldUnits do
-		unitID = shieldUnits[i]
-		connectedToUnitID = tonumber(spGetUnitRulesParam(unitID, "shield_link_unit") or -1)
-		if connectedToUnitID and connectedToUnitID >= 0 and (spValidUnitID(unitID) and spValidUnitID(connectedToUnitID)) then
-			local los1 = spGetUnitLosState(unitID, myTeam, false)
-			local los2 = spGetUnitLosState(connectedToUnitID, myTeam, false)
-			if (fullview or (los1 and los1.los) or (los2 and los2.los)) and
-					(spIsUnitInView(unitID) or spIsUnitInView(connectedToUnitID)) then
+	UpdateLinkCache()
+	for i=1, linkCount do
+		unitID = linkFrom[i]
+		connectedToUnitID = linkTo[i]
+		if (spValidUnitID(unitID) and spValidUnitID(connectedToUnitID)) then
+			-- same predicate as before, reordered: cheap view test first, LOS tables only when needed
+			if (spIsUnitInView(unitID) or spIsUnitInView(connectedToUnitID)) and
+					(fullview or InLos(unitID, myTeam) or InLos(connectedToUnitID, myTeam)) then
 				
 				x1, y1, z1 = spGetUnitViewPosition(unitID, true)
 				x2, y2, z2 = spGetUnitViewPosition(connectedToUnitID, true)
