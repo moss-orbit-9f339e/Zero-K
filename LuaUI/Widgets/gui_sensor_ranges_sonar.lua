@@ -169,6 +169,7 @@ end
 local spGetSpectatingState  = Spring.GetSpectatingState
 local spGetUnitIsActive     = Spring.GetUnitIsActive
 local spIsUnitSelected = Spring.IsUnitSelected
+local spGetSelectedUnitsCount = Spring.GetSelectedUnitsCount
 local spGetUnitDefID        = Spring.GetUnitDefID
 local spGetUnitPosition     = Spring.GetUnitPosition
 local spIsUnitAllied        = Spring.IsUnitAllied
@@ -187,12 +188,10 @@ local GL_KEEP               = 0x1E00 --GL.KEEP
 local GL_REPLACE            = GL.REPLACE
 local GL_TRIANGLE_FAN       = GL.TRIANGLE_FAN
 
-local IterableMap = VFS.Include("LuaRules/Gadgets/Include/IterableMap.lua")
-
 -- Globals
 local vsx, vsy = Spring.GetViewGeometry()
 local lineScale = 1
-local unitList = IterableMap.New() -- all ally units and their coordinates and radar ranges
+local unitList = {} -- unitID -> unitDefID of the ally sonar units in circleInstanceVBO
 local activeUnits = {}
 local anythingToDraw = false
 local spec, fullview = spGetSpectatingState()
@@ -204,7 +203,7 @@ local drawOnlySelected = true
 local disableDraw = false
 
 local function ResetWidget()
-	unitList = IterableMap.New()
+	unitList = {}
 	activeUnits = {}
 	widget:Initialize()
 end
@@ -252,19 +251,19 @@ options = {
 	},
 }
 
--- find all unit types with radar in the game and place ranges into unitRange table
-local unitRange = {} -- table of unit types with their radar ranges
+-- find all unit types with sonar in the game and place ranges into unitRange table
+-- Only defs with a positive sonar range: sonarDistance is 0 (still truthy) for units without
+-- sonar, and their zero-radius circles (degenerate fans and line loops) never drew anything, but
+-- every such allied unit (every unit for a spectator) was tracked and updated every 2 frames.
+local unitRange = {} -- unitDefID -> sonar range
 local isBuilding = {} -- unitDefID keys
 for unitDefID = 1, #UnitDefs do
 	local ud = UnitDefs[unitDefID]
-	if ud.sonarDistance then
+	if (ud.sonarDistance or 0) > 0 then
 		if string.find(ud.name, "raptor", nil, true) then
 			-- skip raptors from sonar
 		else
-			if not unitRange[unitDefID] then
-				unitRange[unitDefID] = {}
-			end
-			unitRange[unitDefID]['range'] = ud.sonarDistance
+			unitRange[unitDefID] = ud.sonarDistance
 
 			if ud.isBuilding or ud.isFactory or ud.speed == 0 then
 				isBuilding[unitDefID] = true
@@ -311,7 +310,7 @@ local function processUnit(unitID, unitDefID, noUpload)
 		return
 	end
 
-	IterableMap.Add(unitList, unitID, unitDefID)
+	unitList[unitID] = unitDefID
 	activeUnits[unitID] = false
 	local x, y, z = spGetUnitPosition(unitID)
 	local col = options.sonar_color.value
@@ -340,8 +339,8 @@ function widget:Initialize()
 end
 
 function widget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam, weaponDefID)
-	if IterableMap.Get(unitList, unitID) then
-		IterableMap.Remove(unitList, unitID)
+	if unitList[unitID] then
+		unitList[unitID] = nil
 		activeUnits[unitID] = nil
 		popElementInstance(circleInstanceVBO,unitID)
 	end
@@ -359,45 +358,56 @@ function widget:UnitFinished(unitID, unitDefID, unitTeam)
 	processUnit(unitID, unitDefID)
 end
 
-local function WantToDrawRangeOfUnit(unitID, unitDefID)
-	if drawOnlySelected and not spIsUnitSelected(unitID) then
-		return false
-	end
-	return spGetUnitIsActive(unitID)
-end
-
-local function UpdateUnitData(unitID, unitDefID, index, instanceData)
-	local instanceDataOffset = (circleInstanceVBO.instanceIDtoIndex[unitID] - 1) * circleInstanceVBO.instanceStep
-	if not isBuilding[unitDefID] then
-		local x, y, z = spGetUnitPosition(unitID)
-
-		for i = instanceDataOffset + 1, instanceDataOffset + 4 do
-			instanceData[i] = instanceData[i + 4]
-		end
-		instanceData[instanceDataOffset+5] = x
-		instanceData[instanceDataOffset+6] = y
-		instanceData[instanceDataOffset+7] = z
-	end
-
-	local range = unitRange[unitDefID]['range']
-	local active = WantToDrawRangeOfUnit(unitID, unitDefID)
-	instanceData[instanceDataOffset + 8] = active and range or 0
-	instanceData[instanceDataOffset + 4] = activeUnits[unitID] and range or 0
-	if not anythingToDraw then
-		anythingToDraw = active or activeUnits[unitID]
-	end
-	activeUnits[unitID] = active
-
-	--pushElementInstance(circleInstanceVBO,instanceData,unitID, true, true) -- overwrite data and dont upload!, but i am scum and am directly modifying the table
-end
-
-
+-- Every UPDATE_RATE frames: shift each moving unit's end position/radius to the start slot
+-- (the shader interpolates between them), store the new ones and upload. Walks the instance table
+-- directly (same set as unitList), writes the Lua mirror for every unit as before, and only uploads
+-- while something can be drawn: DrawWorld draws only when anythingToDraw, which is only set here,
+-- right before the upload, so the buffer always holds the current data when it is drawn.
 function widget:GameFrame(n)
 	if n % UPDATE_RATE == 0 and not disableDraw then
-		local instanceData = circleInstanceVBO.instanceData -- ok this is so nasty that it makes all my prev pop-push work obsolete
-		anythingToDraw = false
-		IterableMap.Apply(unitList, UpdateUnitData, instanceData)
-		uploadAllElements(circleInstanceVBO)
+		local iT = circleInstanceVBO
+		local instanceData = iT.instanceData
+		local indexToID = iT.indextoInstanceID
+		local step = iT.instanceStep
+		local onlySelected = drawOnlySelected
+		-- IsUnitSelected is false for every unit while nothing is selected
+		local noneSelected = onlySelected and (spGetSelectedUnitsCount() == 0)
+		local any = false
+		local base = 0
+		for index = 1, iT.usedElements do
+			local unitID = indexToID[index]
+			local unitDefID = unitList[unitID]
+			if not isBuilding[unitDefID] then
+				local x, y, z = spGetUnitPosition(unitID)
+				-- [base + 4] is rewritten below
+				instanceData[base + 1] = instanceData[base + 5]
+				instanceData[base + 2] = instanceData[base + 6]
+				instanceData[base + 3] = instanceData[base + 7]
+				instanceData[base + 5] = x
+				instanceData[base + 6] = y
+				instanceData[base + 7] = z
+			end
+
+			local range = unitRange[unitDefID]
+			local active
+			if noneSelected or (onlySelected and not spIsUnitSelected(unitID)) then
+				active = false
+			else
+				active = spGetUnitIsActive(unitID)
+			end
+			local wasActive = activeUnits[unitID]
+			instanceData[base + 8] = active and range or 0
+			instanceData[base + 4] = wasActive and range or 0
+			if active or wasActive then
+				any = true
+			end
+			activeUnits[unitID] = active
+			base = base + step
+		end
+		anythingToDraw = any
+		if any then
+			uploadAllElements(iT)
+		end
 	end
 end
 
