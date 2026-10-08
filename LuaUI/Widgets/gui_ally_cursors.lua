@@ -41,6 +41,8 @@ local GetGroundHeight = Spring.GetGroundHeight
 local GetPlayerInfo   = Spring.GetPlayerInfo
 local GetTeamColor    = Spring.GetTeamColor
 local IsSphereInView  = Spring.IsSphereInView
+local IsAABBInView    = Spring.IsAABBInView
+local GetGroundExtremes = Spring.GetGroundExtremes
 local GetSpectatingState = Spring.GetSpectatingState
 
 local glTexCoord      = gl.TexCoord
@@ -245,12 +247,55 @@ local function SetTeamColor(teamID,a)
 end
 
 
+--------------------------------------------------------------------------------
+-- Skip a cursor whose whole trail is off screen with one box test instead of up to 6
+-- interpolations, height reads and sphere tests. The trail of an interpolating cursor lies between its stored points
+-- (the cubic blend weights are in [0,1]), so a box around them, padded by more than the
+-- sample spheres' radius (16) and spanning every height the ground has had, contains every
+-- sample sphere; if the engine finds the box out of view, it finds each sample sphere out of
+-- view as well (both are tests against the same frustum planes). The only assumption is the
+-- height range: the engine's current extremes lag terraforming by up to ~2 s, which the
+-- margin covers.
+local CULL_PAD = 24             -- > 16 (sample sphere radius) plus float slack
+local CULL_HEIGHT_MARGIN = 300  -- terraform progress the engine extremes may not show yet
+local cullOn = (IsAABBInView ~= nil)
+local heightLo, heightHi -- per drawn frame; envelope of the ground extremes
+local envLo, envHi = math.huge, -math.huge
+
+local function UpdateHeightRange()
+  local initMin, initMax, currMin, currMax = GetGroundExtremes()
+  local lo = math.min(initMin or 0, currMin or 0)
+  local hi = math.max(initMax or 0, currMax or 0)
+  if lo < envLo then envLo = lo end
+  if hi > envHi then envHi = hi end
+  heightLo = envLo - CULL_HEIGHT_MARGIN - CULL_PAD
+  heightHi = envHi + CULL_HEIGHT_MARGIN + CULL_PAD
+end
+
+-- base = time since the cursor's last packet (>= 0, < sendPacketEvery).
+-- Samples use data[1..2*numMousePos+2] (points 0..numMousePos).
+local function TrailMayBeInView(data)
+  local minx, minz = data[1], data[2]
+  local maxx, maxz = minx, minz
+  for i = 3, 2*numMousePos + 1, 2 do
+    local x, z = data[i], data[i + 1]
+    if x < minx then minx = x elseif x > maxx then maxx = x end
+    if z < minz then minz = z elseif z > maxz then maxz = z end
+  end
+  if not heightLo then
+    UpdateHeightRange()
+  end
+  return IsAABBInView(minx - CULL_PAD, heightLo, minz - CULL_PAD, maxx + CULL_PAD, heightHi, maxz + CULL_PAD)
+end
+
 -- Emits every cursor quad inside one glBeginEnd; colours are set per quad as before.
 -- Same samples, values (same arithmetic in the same order) and calls as the original loop:
 -- per cursor the constant table reads are hoisted, the cubic blend is inlined (its weights are
 -- shared by x and z), and an idle cursor (all 6 samples at its last position) is handled with
 -- one position.
 local function DrawCursorQuads(time)
+  local cull = cullOn
+  heightLo = nil
   for playerID,data in pairs(WG.alliedCursorsPos) do
     local dataLen = #data
     local teamID = data[dataLen]
@@ -270,7 +315,7 @@ local function DrawCursorQuads(time)
           DrawGroundquad(wx,gy,wz)
         end
       end
-    else
+    elseif not (cull and base >= 0 and not TrailMayBeInView(data)) then
       local lastX, lastZ, gy, inView
       for n=0,5 do
         local wx,wz = data[1],data[2]
