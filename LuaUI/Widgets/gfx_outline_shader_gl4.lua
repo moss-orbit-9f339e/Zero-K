@@ -799,8 +799,16 @@ function widget:DrawWorld()
 			resurrectionHalosShader:SetUniform("stencilPass", 1.0)
 			resurrectionHalosVBO.VAO:DrawArrays(GL.POINTS, resurrectionHalosVBO.usedElements)
 		end
-		
-		gl.Clear( GL.STENCIL_BUFFER_BIT)
+
+		-- No stencil clear needed here: the stencil is already back to 0.
+		-- * Every stencil user before this point leaves 0 (engine clear at the start of the world
+		--   pass, Selected Units GL4 / sensor ranges / attack range GL4 end with a stencil clear,
+		--   glVolumes-style volumes zero what they set), and the clear value is always 0.
+		-- * Pass 2 draws the same points (VS/GS do not read stencilPass, nothing changes between the
+		--   draws), the FS has no discard, alpha test and alpha-to-coverage are off, depth test is
+		--   off, so it reaches every sample pass 1 set to 1 and DECR takes it to 0 (once: after
+		--   that EQUAL 1 fails and the KEEP sfail op applies).
+		-- * Samples not covered by pass 1 are untouched and still 0.
 		resurrectionHalosShader:Deactivate()
 		gl.Texture(0, false)
 		gl.Texture(1, false)-- Texture file
