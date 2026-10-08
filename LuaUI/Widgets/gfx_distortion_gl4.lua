@@ -379,6 +379,9 @@ local function createDistortionInstanceVBO(vboLayout, vertexVBO, numVertices, in
 		targetDistortionVBO.instanceVBO,
 		targetDistortionVBO.indexVBO
 	)
+	-- The cone and beam VAOs have no index buffer, so the engine rebuilt them
+	-- on every draw; a dummy index buffer (never read by their DrawArrays) keeps them.
+	InstanceVBOTable.stabilizeInstanceTableVAO(targetDistortionVBO)
 	return targetDistortionVBO
 end
 
@@ -440,6 +443,9 @@ local function initGL4()
 	end
 
 	fullScreenQuadVAO = InstanceVBOTable.MakeTexRectVAO() --  -1, -1, 1, 0,   0,0,1, 0.5)
+	-- Keep the VAO between draws (see stabilizeVAO). Attribute 1 is free: the rect buffer uses 0
+	-- and the only shader drawn with it (screen_distortion_combine_gl4.vert.glsl) reads gl_Vertex.
+	InstanceVBOTable.stabilizeVAO(fullScreenQuadVAO, true, false, false, 1)
 	-- init the VBO
 	local vboLayout = {
 		{ id = 3, name = "worldposrad", size = 4 },

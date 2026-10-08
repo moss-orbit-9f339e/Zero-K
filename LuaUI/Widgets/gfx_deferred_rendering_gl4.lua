@@ -448,6 +448,9 @@ local function createLightInstanceVBO(vboLayout, vertexVBO, numVertices, indexVB
 	targetLightVBO.numVertices = numVertices
 	targetLightVBO.indexVBO = indexVBO
 	targetLightVBO.VAO = InstanceVBOTable.makeVAOandAttach(targetLightVBO.vertexVBO, targetLightVBO.instanceVBO, targetLightVBO.indexVBO)
+	-- The cone and beam VAOs have no index buffer, so the engine rebuilt them
+	-- on every draw; a dummy index buffer (never read by their DrawArrays) keeps them.
+	InstanceVBOTable.stabilizeInstanceTableVAO(targetLightVBO)
 	return targetLightVBO
 end
 
