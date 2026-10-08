@@ -109,19 +109,17 @@ function widget:GameFrame(n)
 		IterableMap.Add(trackedUnits, unitOnFireUpdateUnitID, n + UNIT_TIMEOUT)
 	end
 
-	if n % CHECK_INTERVAL ~= 0 then
-		return
-	end
-
 	if IterableMap.IsEmpty(trackedUnits) then
 		return
 	end
 
+	-- Each unit is still updated every CHECK_INTERVAL frames, but a 1/CHECK_INTERVAL slice of them
+	-- per frame instead of all of them on one frame (which made every 6th frame a spike).
 	local wx, wy, wz = GetWind()
 	flameFX.force[1] = wx * 0.04
 	flameFX.force[3] = wz * 0.04
 	local count = IterableMap.GetIndexMax(trackedUnits)
-	IterableMap.Apply(trackedUnits, UpdateBurningUnit, flameFX, n, math.max(0, math.min(1, 1 - (count - 400)/400)))
+	IterableMap.ApplyFraction(trackedUnits, CHECK_INTERVAL, n % CHECK_INTERVAL, UpdateBurningUnit, flameFX, n, math.max(0, math.min(1, 1 - (count - 400)/400)))
 end
 
 function widget:Initialize()
