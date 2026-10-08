@@ -360,9 +360,14 @@ function gadget:GameFrame(n)
 			for i = 1, unitList.count do
 				unitID = unitList[i]
 				unitData = shieldUnits[unitID]
-				on, unitCharge = spGetUnitShieldState(unitID, unitData.shieldNum)
 				chargeFlow = 0
-				attempt = 1
+				if unitData.enabled and unitData.neighborList.count >= 1 then
+					on, unitCharge = spGetUnitShieldState(unitID, unitData.shieldNum)
+					attempt = 1
+				else
+					-- The loop below would exit on its first test without reading on/unitCharge.
+					attempt = false
+				end
 				while attempt and attempt < 3 do
 					if on and unitCharge and unitData.enabled and unitData.neighborList.count >= 1 then
 						allyTeamID = unitData.allyTeamID
