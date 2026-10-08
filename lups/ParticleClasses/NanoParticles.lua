@@ -180,10 +180,23 @@ NanoParticles.drawIsMatrixNeutral = true
 local spGetFrameTimeOffset = Spring.GetFrameTimeOffset
 local passTimeOffset -- constant within a drawn frame, read once per pass
 
+--// The per-effect attributes that only set GL "current" vertex attribute values (texcoord units
+--// 1, 2, 6, 7 and the colour) are only sent when they differ from the values the previous
+--// effect of this pass left. Nothing between two effects' draws changes them: the shared display
+--// lists only set units 4 and 5 per vertex, and Lups only changes matrices between the draws of
+--// one class. Effects assisting the same target share target position, radius and team colour.
+local cT1a, cT1b, cT1c, cT2a, cT2b, cT2c
+local cT6a, cT6b, cT6c, cT6d, cT7a, cT7b
+local cCa, cCb, cCc, cCd
+
 function NanoParticles:BeginDraw()
 	glUseShader(billShader)
 	glBlending(GL_ONE,GL_ONE_MINUS_SRC_ALPHA)
 	passTimeOffset = spGetFrameTimeOffset()
+	-- unknown current values: false never equals a number (nor nil, so bad values still error)
+	cT1a, cT1b, cT1c, cT2a, cT2b, cT2c = false, false, false, false, false, false
+	cT6a, cT6b, cT6c, cT6d, cT7a, cT7b = false, false, false, false, false, false
+	cCa, cCb, cCc, cCd = false, false, false, false
 end
 
 function NanoParticles:EndDraw()
@@ -195,35 +208,57 @@ function NanoParticles:EndDraw()
 end
 
 function NanoParticles:Draw()
-	if (lastTexture~=self.texture) then
-		glTexture(self.texture)
-		lastTexture = self.texture
+	local texture = self.texture
+	if (lastTexture~=texture) then
+		glTexture(texture)
+		lastTexture = texture
 	end
 
 	local startPos  = self.pos
 	local endPosNew = self.targetpos
 	local endPosOld = self.targetposStart
-	
-	if (not self.pos) or (not self.targetpos) or (not self.targetposStart) then
+
+	if (not startPos) or (not endPosNew) or (not endPosOld) then
 		self._dead = true
 		return
 	end
-	
-	glMultiTexCoord(0,  startPos[1],  startPos[2],  startPos[3], 1)
-	glMultiTexCoord(1, endPosNew[1], endPosNew[2], endPosNew[3], 1)
-	glMultiTexCoord(2, endPosOld[1], endPosOld[2], endPosOld[3], 1)
 
-	glMultiTexCoord(6,self.size,self.sizeSpread,self.sizeGrowth,self.targetradius)
-	local delaySpread = ((self.life ~= self.reuseLinger) and 1/(self.life - self.reuseLinger)) or 10000
-	glMultiTexCoord(7,self.delaySpread,delaySpread)
+	glMultiTexCoord(0,  startPos[1],  startPos[2],  startPos[3], 1)
+	local a, b, c, d = endPosNew[1], endPosNew[2], endPosNew[3]
+	if a ~= cT1a or b ~= cT1b or c ~= cT1c then
+		glMultiTexCoord(1, a, b, c, 1)
+		cT1a, cT1b, cT1c = a, b, c
+	end
+	a, b, c = endPosOld[1], endPosOld[2], endPosOld[3]
+	if a ~= cT2a or b ~= cT2b or c ~= cT2c then
+		glMultiTexCoord(2, a, b, c, 1)
+		cT2a, cT2b, cT2c = a, b, c
+	end
+
+	a, b, c, d = self.size, self.sizeSpread, self.sizeGrowth, self.targetradius
+	if a ~= cT6a or b ~= cT6b or c ~= cT6c or d ~= cT6d then
+		glMultiTexCoord(6, a, b, c, d)
+		cT6a, cT6b, cT6c, cT6d = a, b, c, d
+	end
+	local life, reuseLinger = self.life, self.reuseLinger
+	local delaySpread = ((life ~= reuseLinger) and 1/(life - reuseLinger)) or 10000
+	a = self.delaySpread
+	if a ~= cT7a or delaySpread ~= cT7b then
+		glMultiTexCoord(7, a, delaySpread)
+		cT7a, cT7b = a, delaySpread
+	end
 
 	local color = self.color
-	glColor(color[1],color[2],color[3],color[4])
+	a, b, c, d = color[1], color[2], color[3], color[4]
+	if a ~= cCa or b ~= cCb or c ~= cCc or d ~= cCd then
+		glColor(a, b, c, d)
+		cCa, cCb, cCc, cCd = a, b, c, d
+	end
 
 	local timeOffset = passTimeOffset
 	if (self.inversed)
-		then glMultiTexCoord(3, self.urot, self.life - self.reuseLinger - self.frame - timeOffset, self.maxLife - self.reuseLinger, self.stopframe)
-		else glMultiTexCoord(3, self.urot, self.frame + timeOffset, self.maxLife - self.reuseLinger, self.stopframe) end
+		then glMultiTexCoord(3, self.urot, life - reuseLinger - self.frame - timeOffset, self.maxLife - reuseLinger, self.stopframe)
+		else glMultiTexCoord(3, self.urot, self.frame + timeOffset, self.maxLife - reuseLinger, self.stopframe) end
 
 	glCallList(self.dlist)
 end
