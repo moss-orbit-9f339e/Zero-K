@@ -240,6 +240,7 @@ Spring.Echo("USE_OLD_CHILI")
 
 local Chili
 local screen0
+local screen0raw --// the screen object itself, without the SafeWrap'd link
 local th
 local tk
 local tf
@@ -271,6 +272,7 @@ function widget:Initialize()
 	--// Export Widget Globals
 	WG.Chili = Chili
 	WG.Chili.Screen0 = screen0
+	screen0raw = Chili.UnlinkSafe(screen0)
 
 	--// do this after the export to the WG table!
 	--// because other widgets use it with `parent=Chili.Screen0`,
@@ -292,13 +294,15 @@ end
 
 function widget:DrawScreen()
 	gl.Color(1,1,1,1)
-	if (not screen0:IsEmpty()) then
+	--// the screen is called directly instead of through the SafeWrap'd link,
+	--// which builds a wrapper closure plus an xpcall per method lookup
+	if screen0raw.children[1] then
 		gl.PushMatrix()
 			local vsx,vsy = gl.GetViewSizes()
 			gl.Translate(0,vsy,0)
 			gl.Scale(1,-1,1)
 			gl.Scale(WG.uiScale,WG.uiScale,1)
-			screen0:Draw()
+			Chili.SafeCall(screen0raw.Draw, screen0raw)
 		gl.PopMatrix()
 	end
 	gl.Color(1,1,1,1)
@@ -356,7 +360,9 @@ function widget:IsAbove(x,y)
 		return false
 	end
 
-	return screen0:IsAbove(x,y)
+	--// same call without the SafeWrap'd link: inside, every field access
+	--// and method call on the screen went through the wrapper
+	return Chili.SafeCall(screen0raw.IsAbove, screen0raw, x, y)
 end
 
 
