@@ -32,9 +32,13 @@ local spFindUnitCmdDesc     = Spring.FindUnitCmdDesc
 local spGetUnitAllyTeam     = Spring.GetUnitAllyTeam
 local spIsPosInLos          = Spring.IsPosInLos
 local spGetGroundHeight     = Spring.GetGroundHeight
+local spGetUnitCurrentCommand = Spring.GetUnitCurrentCommand
+local spGetUnitShieldState  = Spring.GetUnitShieldState
 local sqrt                  = math.sqrt
 
 local GetEffectiveWeaponRange = Spring.Utilities.GetEffectiveWeaponRange
+local GetUnitFireState = Spring.Utilities.GetUnitFireState
+local CheckBit = Spring.Utilities.CheckBit
 
 local UPDATE_RATE = 20
 local MEX_UPDATE_RATE = 35
@@ -107,8 +111,8 @@ local function IsTooBusyToFire(unitID, unitData)
 		return true, GG.GetUnitTarget(unitID)
 	end
 	
-	local cmdID, cmdOpts, cmdTag, cp_1, cp_2, cp_3 = Spring.GetUnitCurrentCommand(unitID)
-	if (cmdID == CMD_ATTACK and not Spring.Utilities.CheckBit(DEBUG_NAME, cmdOpts, CMD.OPT_INTERNAL)) then
+	local cmdID, cmdOpts, cmdTag, cp_1, cp_2, cp_3 = spGetUnitCurrentCommand(unitID)
+	if (cmdID == CMD_ATTACK and not CheckBit(DEBUG_NAME, cmdOpts, CMD_OPT_INTERNAL)) then
 		-- Manual attack commands should disable this behaviour
 		return true, (not cp_2) and cp_1
 	end
@@ -116,7 +120,7 @@ local function IsTooBusyToFire(unitID, unitData)
 	if baitLevel > 2 then
 		return true
 	end
-	if (Spring.Utilities.GetUnitFireState(unitID) ~= 2) then
+	if (GetUnitFireState(unitID) ~= 2) then
 		return true
 	end
 	return false
@@ -148,7 +152,7 @@ local function DoUnitUpdate(unitID, unitData)
 	end
 	
 	if behaviour.wardFireShield then
-		local enabled, charge = Spring.GetUnitShieldState(enemyID)
+		local enabled, charge = spGetUnitShieldState(enemyID)
 		charge = charge or 0
 		if (not enabled) or charge < behaviour.wardFireShield then
 			return
@@ -215,7 +219,7 @@ local function DoUnitUpdate(unitID, unitData)
 		
 		if (not targetLeeway) or (effectiveRange + targetLeeway > predictedDist and effectiveRange + behaviour.wardFireLeeway + behaviour.wardFireEnableLeeway < predictedDist) then
 			local tx, tz = ux + dx, uz + dz
-			local ty = math.max(0, Spring.GetGroundHeight(tx, tz)) + behaviour.wardFireHeight
+			local ty = math.max(0, spGetGroundHeight(tx, tz)) + behaviour.wardFireHeight
 			local fx, fy, fz = GG.GetFireTowardsPos(unitID, unitData.unitDefID, tx, ty, tz, behaviour.wardFireLeeway)
 			
 			if doDebug then
@@ -275,7 +279,8 @@ local function DoMexShootUnitUpdate(unitID, unitData)
 	if (not enemyID) and spIsPosInLos(spotX, 0, spotZ, unitData.allyTeamID) then
 		return
 	end
-	local spotY = math.max(0, CallAsTeam(unitData.teamID, function () return spGetGroundHeight(spotX, spotZ) end))
+	-- CallAsTeam passes the extra arguments to the function; same call without a new closure each time.
+	local spotY = math.max(0, CallAsTeam(unitData.teamID, spGetGroundHeight, spotX, spotZ))
 	
 	if not behaviour.ignoreHeight then
 		local ux, uy, uz = spGetUnitPosition(unitID)

@@ -81,18 +81,65 @@ local MEX_DISTANCE = 50
 -- Utilities
 --------------------------------------------------------------------------------
 
+-- Spots bucketed by SPOT_CELL x SPOT_CELL squares so GetClosestMetalSpot only looks at spots near the
+-- query. Built on first use for the current metalSpots table (spot positions never change).
+local SPOT_CELL = 256 -- power of two: dividing a coordinate by it is exact
+local spotCellsFor = false
+local spotCells, spotCellMinX, spotCellMaxX, spotCellMinZ, spotCellMaxZ
+
+local function BuildSpotCells()
+	spotCellsFor = metalSpots
+	spotCells = {}
+	spotCellMinX, spotCellMaxX, spotCellMinZ, spotCellMaxZ = 0, -1, 0, -1
+	for i = 1, #metalSpots do
+		local spot = metalSpots[i]
+		local cx, cz = math.floor(spot.x/SPOT_CELL), math.floor(spot.z/SPOT_CELL)
+		if i == 1 or cx < spotCellMinX then spotCellMinX = cx end
+		if i == 1 or cx > spotCellMaxX then spotCellMaxX = cx end
+		if i == 1 or cz < spotCellMinZ then spotCellMinZ = cz end
+		if i == 1 or cz > spotCellMaxZ then spotCellMaxZ = cz end
+		local column = spotCells[cx] or {}
+		spotCells[cx] = column
+		local cell = column[cz] or {}
+		column[cz] = cell
+		cell[#cell + 1] = i
+	end
+end
+
 local function GetClosestMetalSpot(x, z, maxDist) --is used by single mex placement, not used by areamex
+	if spotCellsFor ~= metalSpots then
+		BuildSpotCells()
+	end
 	local bestSpot
 	local bestDist = maxDist*maxDist
 	local bestIndex
-	for i = 1, #metalSpots do
-		local spot = metalSpots[i]
-		local dx, dz = x - spot.x, z - spot.z
-		local dist = dx*dx + dz*dz
-		if dist < bestDist then
-			bestSpot = spot
-			bestDist = dist
-			bestIndex = i
+	-- Same result as scanning all spots in index order and keeping the first strictly closer one:
+	-- a spot can only pass dist < maxDist*maxDist if |x - spot.x| < maxDist and |z - spot.z| < maxDist
+	-- (float rounding is monotonic), so its cell lies in the ranges below; the distance expression is
+	-- unchanged, and an equal distance only wins with a lower index.
+	local cx1 = math.max(spotCellMinX, math.floor((x - maxDist)/SPOT_CELL))
+	local cx2 = math.min(spotCellMaxX, math.floor((x + maxDist)/SPOT_CELL))
+	local cz1 = math.max(spotCellMinZ, math.floor((z - maxDist)/SPOT_CELL))
+	local cz2 = math.min(spotCellMaxZ, math.floor((z + maxDist)/SPOT_CELL))
+	for cx = cx1, cx2 do
+		local column = spotCells[cx]
+		if column then
+			for cz = cz1, cz2 do
+				local cell = column[cz]
+				if cell then
+					for k = 1, #cell do
+						local i = cell[k]
+						local spot = metalSpots[i]
+						local dx, dz = x - spot.x, z - spot.z
+						local dist = dx*dx + dz*dz
+						if dist < bestDist or (dist == bestDist and bestIndex and i < bestIndex) then
+							bestSpot = spot
+							bestDist = dist
+							bestIndex = i
+						end
+					end
+				end
+			end
 		end
 	end
 	if math.sqrt(bestDist) >= maxDist then
