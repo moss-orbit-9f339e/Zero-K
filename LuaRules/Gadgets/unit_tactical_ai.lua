@@ -39,12 +39,16 @@ local spValidUnitID         = Spring.ValidUnitID
 local spGetUnitIsStunned    = Spring.GetUnitIsStunned
 local spGetUnitRulesParam   = Spring.GetUnitRulesParam
 local spGetUnitWeaponState  = Spring.GetUnitWeaponState
+local spGetUnitCurrentCommand = Spring.GetUnitCurrentCommand
+local spGetGroundHeight     = Spring.GetGroundHeight
 local random                = math.random
 local sqrt                  = math.sqrt
 local min                   = math.min
 
 local GiveClampedOrderToUnit = Spring.Utilities.GiveClampedOrderToUnit
 local GetEffectiveWeaponRange = Spring.Utilities.GetEffectiveWeaponRange
+local GetUnitMoveState = Spring.Utilities.GetUnitMoveState
+local CheckBit = Spring.Utilities.CheckBit
 
 local unitDefRanges = {}
 local unitDefRealRanges = {}
@@ -141,19 +145,34 @@ local function Dist(x1, y1, x2, y2)
 	return sqrt((x1 - x2)^2 + (y1 - y2)^2)
 end
 
+-- LOS state bits, see rts/Sim/Units/Unit.h
+local LOS_INLOS = 1
+local LOS_PREVLOS_AND_CONTRADAR = 12 -- LOS_PREVLOS | LOS_CONTRADAR
+
 local function GetUnitVisibleInformation(unitID, allyTeamID)
-	if (not unitID) or select(2, spGetUnitIsStunned(unitID)) then
+	if not unitID then
 		return
 	end
-	local states = spGetUnitLosState(unitID, allyTeamID, false)
-	return spGetUnitDefID(unitID), states and states.typed
+	local _, stunned = spGetUnitIsStunned(unitID)
+	if stunned then
+		return
+	end
+	-- The raw (number) form of GetUnitLosState avoids creating a table. The table form sets
+	-- typed = true exactly when (los & INLOS) or (los & (PREVLOS|CONTRADAR)) == PREVLOS|CONTRADAR,
+	-- and is absent otherwise, so typeKnown below is true or nil as before.
+	local losState = spGetUnitLosState(unitID, allyTeamID, true)
+	local typed
+	if losState and (losState % 2 == LOS_INLOS or losState % 16 >= LOS_PREVLOS_AND_CONTRADAR) then
+		typed = true
+	end
+	return spGetUnitDefID(unitID), typed
 end
 
 local function GetUnitBehavior(unitID, unitDefID)
 	if unitAIBehaviour[unitDefID].waterline then
 		local bx, by, bz = spGetUnitPosition(unitID, true)
 		if unitAIBehaviour[unitDefID].floatWaterline then
-			by = Spring.GetGroundHeight(bx, bz)
+			by = spGetGroundHeight(bx, bz)
 		end
 		if by < unitAIBehaviour[unitDefID].waterline then
 			return unitAIBehaviour[unitDefID].sea
@@ -201,7 +220,7 @@ local function GetUnitOrderState(unitID, unitData, cmdID, cmdOpts, cp_1, cp_2, c
 		end
 		return false -- no queue and on hold position.
 	end
-	if (holdPos and cmdID == CMD_ATTACK and Spring.Utilities.CheckBit(DEBUG_NAME, cmdOpts, CMD.OPT_INTERNAL)) then
+	if (holdPos and cmdID == CMD_ATTACK and CheckBit(DEBUG_NAME, cmdOpts, CMD_OPT_INTERNAL)) then
 		if spGetUnitCommandCount(unitID) == 1 then
 			return false -- set to hold position and is auto-acquiring target
 		end
@@ -210,7 +229,7 @@ local function GetUnitOrderState(unitID, unitData, cmdID, cmdOpts, cp_1, cp_2, c
 	if cmdID == CMD_FIGHT then
 		return -1, false, true, nil, nil, cp_1, cp_2, cp_3
 	elseif cmdID == CMD_ATTACK then -- if I attack
-		local cmdID_2 = Spring.GetUnitCurrentCommand(unitID, 2)
+		local cmdID_2 = spGetUnitCurrentCommand(unitID, 2)
 		if ((not holdPos) or (cmdID_2 == CMD_FIGHT)) then
 			local target, twoParams = cp_1, cp_2
 			if twoParams then
@@ -223,7 +242,7 @@ local function GetUnitOrderState(unitID, unitData, cmdID, cmdOpts, cp_1, cp_2, c
 				if (cmdID == CMD_FIGHT or cmdID_2 == CMD_FIGHT) then
 					-- Do not skirm single target with FIGHT
 					return -1, false, true, spValidUnitID(target) and target, cmdTag
-				elseif Spring.Utilities.CheckBit(DEBUG_NAME, cmdOpts, CMD.OPT_INTERNAL) then
+				elseif CheckBit(DEBUG_NAME, cmdOpts, CMD_OPT_INTERNAL) then
 					-- Do no skirm single target when it is auto attack
 					return -1, false, false, spValidUnitID(target) and target, cmdTag
 				elseif spValidUnitID(target) then
@@ -233,11 +252,11 @@ local function GetUnitOrderState(unitID, unitData, cmdID, cmdOpts, cp_1, cp_2, c
 			end
 		end
 	elseif (cmdID == CMD_MOVE or cmdID == CMD_RAW_MOVE) and (cp_1 == unitData.cx) and (cp_2 == unitData.cy) and (cp_3 == unitData.cz) then
-		local cmdID_2, cmdOpts_2, cmdTag_2, cps_1, cps_2, cps_3 = Spring.GetUnitCurrentCommand(unitID, 2)
+		local cmdID_2, cmdOpts_2, cmdTag_2, cps_1, cps_2, cps_3 = spGetUnitCurrentCommand(unitID, 2)
 		if not cmdID_2 then
 			return -1, true
 		end
-		local cmdID_3 = Spring.GetUnitCurrentCommand(unitID, 3)
+		local cmdID_3 = spGetUnitCurrentCommand(unitID, 3)
 		if cmdID_2 == CMD_FIGHT or (cmdID_2 == CMD_ATTACK and ((not holdPos) or cmdID_3 == CMD_FIGHT)) then -- if the next command is attack, patrol or fight
 			local target, twoParams = cps_1, cps_2
 			if twoParams then
@@ -250,7 +269,7 @@ local function GetUnitOrderState(unitID, unitData, cmdID, cmdOpts, cp_1, cp_2, c
 				if (cmdID_2 == CMD_FIGHT or cmdID_3 == CMD_FIGHT) then
 					-- Do not skirm single target with FIGHT
 					return -1, true, true, target, cmdTag_2, cps_1, cps_2, cps_3
-				elseif Spring.Utilities.CheckBit(DEBUG_NAME, cmdOpts_2, CMD.OPT_INTERNAL) then
+				elseif CheckBit(DEBUG_NAME, cmdOpts_2, CMD_OPT_INTERNAL) then
 					-- Do no skirm single target when it is auto attack
 					return -1, true, false, target, cmdTag_2, cps_1, cps_2, cps_3
 				else
@@ -390,7 +409,7 @@ local function GetAiExitEarly(unitID, unitData, behaviour)
 		return false
 	end
 	if unitData.receivedOrder then
-		local cmdID, _, cmdTag, cp_1, cp_2, cp_3 = Spring.GetUnitCurrentCommand(unitID)
+		local cmdID, _, cmdTag, cp_1, cp_2, cp_3 = spGetUnitCurrentCommand(unitID)
 		ClearOrder(unitID, unitData, cmdID, cmdTag, cp_1, cp_2, cp_3)
 	end
 	return true
@@ -917,7 +936,7 @@ local function DoTacticalAI(unitID, cmdID, cmdOpts, cmdTag, cp_1, cp_2, cp_3,
 		return true, orderSent
 	end
 	
-	if (cmdID == CMD_ATTACK and not Spring.Utilities.CheckBit(DEBUG_NAME, cmdOpts, CMD.OPT_INTERNAL)) then
+	if (cmdID == CMD_ATTACK and not CheckBit(DEBUG_NAME, cmdOpts, CMD_OPT_INTERNAL)) then
 		return false -- if I have been given attack order manually do not flee
 	end
 	
@@ -948,8 +967,8 @@ local function DoUnitUpdate(unitID, frame, slowUpdate)
 		return
 	end
 	
-	local cmdID, cmdOpts, cmdTag, cp_1, cp_2, cp_3 = Spring.GetUnitCurrentCommand(unitID)
-	local moveState = Spring.Utilities.GetUnitMoveState(unitID)
+	local cmdID, cmdOpts, cmdTag, cp_1, cp_2, cp_3 = spGetUnitCurrentCommand(unitID)
+	local moveState = GetUnitMoveState(unitID)
 	local roamState = (moveState == 2)
 	local middleMoveState = (moveState == 1)
 	local holdPos = (moveState == 0)
@@ -1156,7 +1175,7 @@ local function AddIdleUnit(unitID, unitDefID)
 	
 	local behaviour = GetUnitBehavior(unitID, unitData.udID)
 	local nearbyEnemy = spGetUnitNearestEnemy(unitID, behaviour.leashAgressRange, true) or false
-	local x, _, z = Spring.GetUnitPosition(unitID)
+	local x, _, z = spGetUnitPosition(unitID)
 	
 	unitData.idleX = x
 	unitData.idleZ = z
