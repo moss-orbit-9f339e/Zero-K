@@ -40,6 +40,16 @@ local min = math.min
 
 local terraunitDefID = UnitDefNames["terraunit"].id
 
+-- UnitDefs fields read per unit in CheckLabs, copied once (UnitDefs never change;
+-- each field read through the UnitDefs proxy is a C metamethod call).
+local unitDefCanFly = {}
+local unitDefIsImmobile = {}
+for i = 1, #UnitDefs do
+	local ud = UnitDefs[i]
+	unitDefCanFly[i] = ud.canFly
+	unitDefIsImmobile[i] = ud.isImmobile
+end
+
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
@@ -71,10 +81,12 @@ local function CheckLabs(checkFeatures, onlyUnstick)
 				for j = 1, #units do
 					local unitID = units[j]
 					local unitDefID = spGetUnitDefID(unitID)
-					local ud = UnitDefs[unitDefID]
-					if (not ud.canFly) and (spMoveCtrlGetTag(unitID) == nil) and not spGetUnitTransporter(unitID) then
-						local ally = spGetUnitAllyTeam(unitID)
-						if (ally ~= data.ally) or (data.unstickHelp and not ud.isImmobile) then --teleport unit away
+					-- Test ally/immobile before the MoveCtrl and transporter reads: all four are pure
+					-- getters, so only the call count changes. Skips the lab itself and own units.
+					local ally = (not unitDefCanFly[unitDefID]) and spGetUnitAllyTeam(unitID)
+					if ally and ((ally ~= data.ally) or (data.unstickHelp and not unitDefIsImmobile[unitDefID]))
+							and (spMoveCtrlGetTag(unitID) == nil) and not spGetUnitTransporter(unitID) then
+						do --teleport unit away
 							local ux, _, uz, _,_,_, _, aimY  = spGetUnitPosition(unitID, true, true)
 							local vx, vy, vz = spGetUnitVelocity(unitID)
 							

@@ -306,8 +306,12 @@ function gadget:AllowUnitBuildStep(builderID, teamID, unitID, unitDefID, step)
 	end
 	
 	local conAmount = UnitConPortion[builderID] or math.random()
-	if (TeamPriorityUnits[teamID] == nil) then
-		TeamPriorityUnits[teamID] = {}
+	-- Plain tables read into locals: nothing below can replace these entries
+	-- (the only calls are spGetUnitIsStunned and, at the end, CheckReserveResourceUse).
+	local teamPriorityUnits = TeamPriorityUnits[teamID]
+	if (teamPriorityUnits == nil) then
+		teamPriorityUnits = {}
+		TeamPriorityUnits[teamID] = teamPriorityUnits
 	end
 	
 	local scale
@@ -326,19 +330,21 @@ function gadget:AllowUnitBuildStep(builderID, teamID, unitID, unitDefID, step)
 		end
 	end
 	
+	local unitPriority = UnitPriority[unitID]
 	local priorityLevel
-	if (UnitPriority[unitID] == 0 or (UnitPriority[builderID] == 0 and (UnitPriority[unitID] or 1) == 1 )) then
+	if (unitPriority == 0 or (UnitPriority[builderID] == 0 and (unitPriority or 1) == 1 )) then
 		priorityLevel = 1
-	elseif (UnitPriority[unitID] == 2 or (UnitPriority[builderID] == 2 and (UnitPriority[unitID] or 1) == 1))  then
+	elseif (unitPriority == 2 or (UnitPriority[builderID] == 2 and (unitPriority or 1) == 1))  then
 		priorityLevel = 3
 	else
 		priorityLevel = 2
 	end
 	
-	TeamPriorityUnits[teamID][builderID] = priorityLevel
-	if scale and scale[priorityLevel] then
+	teamPriorityUnits[builderID] = priorityLevel
+	local levelScale = scale and scale[priorityLevel]
+	if levelScale then
 		-- scale is a ratio between available-resource and desired-spending.
-		conAmount = conAmount + scale[priorityLevel]
+		conAmount = conAmount + levelScale
 		if conAmount >= 1 then
 			UnitConPortion[builderID] = conAmount - 1
 			return priorityLevel == 3 or CheckReserveResourceUse(teamID, UnitOnlyEnergy[builderID])

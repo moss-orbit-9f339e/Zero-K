@@ -104,12 +104,18 @@ function HitByWeaponGadget()
 	end
 end
 
-local noFFWeaponDefs = {}
-for wdid = 1, #WeaponDefs do
-	local wd = WeaponDefs[wdid]
-	if wd.customParams and wd.customParams.nofriendlyfire then
-		noFFWeaponDefs[wdid] = true
+-- WeaponDefs never change, so the set is built once (by the first solar) and
+-- shared read-only by all solars instead of scanning every WeaponDef per unit.
+local noFFWeaponDefs = GG.energysolar_noFFWeaponDefs
+if not noFFWeaponDefs then
+	noFFWeaponDefs = {}
+	for wdid = 1, #WeaponDefs do
+		local wd = WeaponDefs[wdid]
+		if wd.customParams and wd.customParams.nofriendlyfire then
+			noFFWeaponDefs[wdid] = true
+		end
 	end
+	GG.energysolar_noFFWeaponDefs = noFFWeaponDefs
 end
 
 -- this happens before PreDamaged but only in 97.0+
