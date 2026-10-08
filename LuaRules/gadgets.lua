@@ -2867,6 +2867,9 @@ local AllowCommand_WantedUnitDefID = {}
 
 
 local SIZE_LIMIT = 10^8
+-- The engine version cannot change while the game runs (and engine_compat.lua,
+-- included above, has already settled Script.IsEngineMinVersion).
+local ENGINE_HAS_ALLOWCOMMAND_PLAYERID = Script.IsEngineMinVersion(104, 0, 1431)
 local function AllowCommandParams(cmdParams, playerID)
 	for i = 1, #cmdParams do
 	-- NaN has the property that NaN ~= NaN
@@ -2884,7 +2887,7 @@ function gadgetHandler:AllowCommand(unitID, unitDefID, unitTeam, cmdID, cmdParam
 		return false
 	end
 
-	if not Script.IsEngineMinVersion(104, 0, 1431) then
+	if not ENGINE_HAS_ALLOWCOMMAND_PLAYERID then
 		fromSynced = playerID
 		playerID = nil
 	end
