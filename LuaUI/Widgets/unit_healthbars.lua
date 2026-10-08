@@ -1661,7 +1661,8 @@ local visibleUnits = {}
 -- colours and the progress of bars that advance linearly with the game frame
 -- (reload & co, see AddPercentBar).
 -- Units/features close enough to show text (percentages, titles) and units with a
--- stockpile (icon + count) are drawn by the immediate mode path; the GPU skips them.
+-- stockpile (icon + count) use immediate mode. Ordered GPU ranges stop around them
+-- so overlapping bars keep the original alpha-blending order.
 -- Without engine GL4 support, or if the shader fails, the immediate mode path draws.
 -- The GL4 path is only used while the GL4 paralyze effect draws the stun/disarm/fire
 -- overlays (WG.DrawParalyzedUnitGL4); the old overlays need the immediate mode path.
@@ -1672,22 +1673,13 @@ do
 
 	local spGetUnitDefID       = Spring.GetUnitDefID
 	local spGetUnitRulesParam  = Spring.GetUnitRulesParam
-	local spGetUnitsInSphere   = Spring.GetUnitsInSphere
-	local spGetFeaturesInSphere = Spring.GetFeaturesInSphere
 	local spValidFeatureID     = Spring.ValidFeatureID
 	local spGetCameraPosition  = Spring.GetCameraPosition
 	local glUniform            = gl.Uniform
 	local glDepthMask          = gl.DepthMask
 	local glMultiTexCoord      = gl.MultiTexCoord
 	local GL_POINTS            = GL.POINTS
-	local sqrt                 = math.sqrt
 	local tsort                = table.sort
-
-	-- GetUnitsInSphere tests midPos, the text distance uses the draw position (base).
-	local NEAR_QUERY_MARGIN = 300
-	-- GetFeaturesInSphere tests the current position (+ feature radius), the text
-	-- distance uses the position from the last feature list refresh.
-	local NEAR_FEATURE_QUERY_MARGIN = 100
 
 	local STEP = 20 -- floats per bar element (see BAR_LAYOUT)
 	local BAR_LAYOUT = {
@@ -2173,7 +2165,7 @@ void main(void)
 			end
 			local vbo = gl.GetVBO(GL.ARRAY_BUFFER, false)
 			if not vbo then
-				return
+				error("could not allocate HealthBars instance-data buffer")
 			end
 			vbo:Define(cap, INSTDATA_LAYOUT)
 			if scratchVBO then
@@ -2420,95 +2412,118 @@ void main(void)
 		return sq
 	end
 
-	local function DrawBarBuffers(unitNearSq, featureNearSq)
-		local unitN, featN = unitBuf.used, featBuf.used
-		if unitN == 0 and featN == 0 then
-			return
+	-- The packed buffer changes order when bars disappear. Restore visible-list
+	-- order before drawing: alpha blending makes overlapping bars order-sensitive.
+	local function OrderBarBuffer(buf, list, features)
+		local nextElement = 0
+		for i = 1, #list do
+			local id = features and list[i][4] or list[i]
+			local inst = buf.inst[id]
+			for bar = 1, buf.count[id] or 0 do
+				local old = inst[bar]
+				if old ~= nextElement then
+					local otherID, otherBar = buf.owner[nextElement], buf.ownerBar[nextElement]
+					local a, b = old*STEP, nextElement*STEP
+					for k = 1, STEP do
+						buf.data[a+k], buf.data[b+k] = buf.data[b+k], buf.data[a+k]
+					end
+					buf.owner[old], buf.ownerBar[old] = otherID, otherBar
+					buf.owner[nextElement], buf.ownerBar[nextElement] = id, bar
+					buf.inst[otherID][otherBar], inst[bar] = old, nextElement
+					buf.c1ref[old], buf.c1ref[nextElement] = buf.c1ref[nextElement], buf.c1ref[old]
+					buf.c2ref[old], buf.c2ref[nextElement] = buf.c2ref[nextElement], buf.c2ref[old]
+					MarkDirty(buf, old)
+					MarkDirty(buf, nextElement)
+				end
+				nextElement = nextElement + 1
+			end
 		end
+	end
+
+	local function DrawRange(buf, first, count, features)
+		if count == 0 then return end
 		shader:Activate()
 		glUniform(locBlink, (blink and 1) or 0, (blink_j and 1) or 0, 0, 0)
-		if unitN > 0 then
-			glUniform(locBarDims, barWidth, barHeight, unitRowStep, barScale)
-			glUniform(locBgTop, bkTop[1], bkTop[2], bkTop[3], bkTop[4])
-			glUniform(locBgBottom, bkBottom[1], bkBottom[2], bkBottom[3], bkBottom[4])
-			glUniform(locDist, healthbarDistSq, unitNearSq, 0, 0)
-			unitBuf.vao:DrawArrays(GL_POINTS, 1, 0, unitN)
-		end
-		if featN > 0 then
+		if features then
 			glUniform(locBarDims, featureBarWidth, featureBarHeight, featureRowStep, barScale)
 			glUniform(locBgTop, fbkTop[1], fbkTop[2], fbkTop[3], fbkTop[4])
 			glUniform(locBgBottom, fbkBottom[1], fbkBottom[2], fbkBottom[3], fbkBottom[4])
-			glUniform(locDist, featureDistSq, featureNearSq, 1, 1)
-			featBuf.vao:DrawArrays(GL_POINTS, 1, 0, featN)
+			glUniform(locDist, featureDistSq, 0, 1, 1)
+		else
+			glUniform(locBarDims, barWidth, barHeight, unitRowStep, barScale)
+			glUniform(locBgTop, bkTop[1], bkTop[2], bkTop[3], bkTop[4])
+			glUniform(locBgBottom, bkBottom[1], bkBottom[2], bkBottom[3], bkBottom[4])
+			glUniform(locDist, healthbarDistSq, 0, 0, 0)
 		end
+		buf.vao:DrawArrays(GL_POINTS, 1, 0, count, first)
 		shader:Deactivate()
 	end
 
-	-- Same structure and GL state handling as the immediate mode widget:DrawWorld.
 	function DrawWorldGL4()
 		if not Spring.IsGUIHidden() then
-			if (#visibleUnits + #visibleFeatures == 0) then
-				return
-			end
-			if not camBelowMaxHeight then
-				return false
-			end
-			if WG.Cutscene and WG.Cutscene.IsInCutscene() then
-				return
-			end
+			if (#visibleUnits + #visibleFeatures == 0) or not camBelowMaxHeight then return end
+			if WG.Cutscene and WG.Cutscene.IsInCutscene() then return end
 			glDepthMask(true)
-
 			cx, cy, cz = spGetCameraPosition()
-
-			-- elements moved by RenderUnitDestroyed since the last pass
+			OrderBarBuffer(unitBuf, visibleUnits, false)
+			OrderBarBuffer(featBuf, visibleFeatures, true)
 			FlushBarBuffer(unitBuf)
 			FlushBarBuffer(featBuf)
 
-			local unitNearSq = UnitNearSq()
-			local featureNearSq = FeatureNearSq()
-			DrawBarBuffers(unitNearSq, featureNearSq)
-
-			--// immediate mode: stockpile carriers
-			for unitID, unitDefID in pairs(legacyUnits) do
-				if not spGetUnitRulesParam(unitID, "no_healthbar") then
-					DrawUnitInfos(unitID, unitDefID)
+			local nearSq = UnitNearSq()
+			local first, count = 0, 0
+			for i = 1, #visibleUnits do
+				local id = visibleUnits[i]
+				local x, y, z = Spring.GetUnitViewPosition(id)
+				local n = unitBuf.count[id] or 0
+				local immediate = legacyUnits[id]
+				if x then
+					local dx, dy, dz = x-cx, y-cy, z-cz
+					if dx*dx+dy*dy+dz*dz < nearSq then immediate = true end
 				end
-			end
-
-			--// immediate mode: units close enough for text
-			if unitNearSq > 0 then
-				local nearUnits = spGetUnitsInSphere(cx, cy, cz, sqrt(unitNearSq) + NEAR_QUERY_MARGIN)
-				for i = 1, #nearUnits do
-					local unitID = nearUnits[i]
-					if trackStamp[unitID] and not legacyUnits[unitID] then
-						local unitDefID = spGetUnitDefID(unitID)
-						if unitDefID and not spGetUnitRulesParam(unitID, "no_healthbar") then
-							DrawUnitInfos(unitID, unitDefID, unitNearSq)
-						end
+				if x and not immediate and n > 0 then
+					local offset = unitBuf.inst[id][1]
+					if count > 0 and offset ~= first+count then
+						DrawRange(unitBuf, first, count, false); count = 0
+					end
+					if count == 0 then first = offset end
+					count = count + n
+				elseif immediate and x then
+					DrawRange(unitBuf, first, count, false); count = 0
+					local defID = spGetUnitDefID(id)
+					if defID and not spGetUnitRulesParam(id, "no_healthbar") then
+						DrawUnitInfos(id, defID)
 					end
 				end
 			end
+			DrawRange(unitBuf, first, count, false)
 
-			--// immediate mode: features close enough for text
-			if featureNearSq > 0 then
-				local nearFeatures = spGetFeaturesInSphere(cx, cy, cz, sqrt(featureNearSq) + NEAR_FEATURE_QUERY_MARGIN)
-				local wx, wy, wz, dx, dy, dz, dist, featureInfo
-				for i = 1, #nearFeatures do
-					featureInfo = featEntry[nearFeatures[i]] -- only features of the visible feature list
-					if featureInfo then
-						wx, wy, wz = featureInfo[1], featureInfo[2], featureInfo[3]
-						dx, dy, dz = wx-cx, wy-cy, wz-cz
-						dist = dx*dx + dy*dy + dz*dz
-						if (dist < featureDistSq) and (dist < featureNearSq) and spValidFeatureID(featureInfo[4]) then
-							addTitle = dist < featureTitleSq
-							addPercent = dist < featurePercentSq
-							DrawFeatureInfos(featureInfo[4], featureInfo[5], wx, wy, wz)
+			nearSq = FeatureNearSq()
+			first, count = 0, 0
+			for i = 1, #visibleFeatures do
+				local entry = visibleFeatures[i]
+				local id = entry[4]
+				local dx, dy, dz = entry[1]-cx, entry[2]-cy, entry[3]-cz
+				local dist = dx*dx+dy*dy+dz*dz
+				local n = featBuf.count[id] or 0
+				if spValidFeatureID(id) and dist < featureDistSq then
+					if dist < nearSq then
+						DrawRange(featBuf, first, count, true); count = 0
+						addTitle = dist < featureTitleSq
+						addPercent = dist < featurePercentSq
+						DrawFeatureInfos(id, entry[5], entry[1], entry[2], entry[3])
+					elseif n > 0 then
+						local offset = featBuf.inst[id][1]
+						if count > 0 and offset ~= first+count then
+							DrawRange(featBuf, first, count, true); count = 0
 						end
+						if count == 0 then first = offset end
+						count = count + n
 					end
 				end
 			end
+			DrawRange(featBuf, first, count, true)
 		end
-
 		glDepthMask(false)
 		glMultiTexCoord(1, 1, 1, 1)
 		glColor(1, 1, 1, 1)
@@ -2518,6 +2533,8 @@ void main(void)
 	-- Setup
 
 	function ResetGL4()
+		gl4Gather = false
+		barDrawer.TakeBars()
 		trackStamp, unitInstData, legacyUnits, lastEval = {}, {}, {}, {}
 		trackedCount = 0
 		featStamp, featEntry, featLastEval = {}, {}, {}
@@ -2601,6 +2618,7 @@ void main(void)
 		local ok, res = pcall(InitGL4Resources)
 		if ok and res then
 			ResetGL4()
+			Spring.Echo("HealthBars: GL4 renderer initialized")
 			return true
 		end
 		Spring.Echo("HealthBars: GL4 path unavailable, using immediate mode", (not ok) and tostring(res) or "")
@@ -2774,8 +2792,14 @@ do
 		if gl4Ready then
 			gatherOverlays = not WG.DrawParalyzedUnitGL4
 			if (not gatherOverlays) and (not deactivated) then
+				if not gl4Active then Spring.Echo("HealthBars: GL4 renderer active") end
 				gl4Active = true
-				UpdateGL4()
+				local ok, err = pcall(UpdateGL4)
+				if not ok then
+					Spring.Echo("HealthBars: GL4 update failed, using immediate mode", tostring(err))
+					pcall(ShutdownGL4)
+					gl4Ready, gl4Active = false, false
+				end
 			elseif gl4Active then
 				-- the immediate mode path draws; start from scratch when coming back
 				gl4Active = false
