@@ -110,61 +110,71 @@ local UMHU_updatequeue = {} -- send update data from gadget:UnsyncedHeightMapUpd
 
 local function ChangeTextureBlock(bx, bz, myTex)
 	-- Ensure they snap to grid
-	bx = math.floor(bx/8)*8
-	bz = math.floor(bz/8)*8
+	bx = floor(bx/8)*8
+	bz = floor(bz/8)*8
 	
 	-- UHM chunk location of bx,bz
 	local cx = floor(bx/UHM_WIDTH)
 	local cz = floor(bz/UHM_HEIGHT)
-	-- Drawing square location of bx,bz
-	local sx = floor(bx/SQUARE_SIZE)
-	local sz = floor(bz/SQUARE_SIZE)
 
 	-- Ensure the existence of this UHM chunk
-	if not (chunkMap[cx] and chunkMap[cx][cz]) then
-		chunkMap[cx] = chunkMap[cx] or {}
-		chunkMap[cx][cz] = {
+	local chunkRow = chunkMap[cx]
+	local chunk = chunkRow and chunkRow[cz]
+	if not chunk then
+		if not chunkRow then
+			chunkRow = {}
+			chunkMap[cx] = chunkRow
+		end
+		chunk = {
 			blockMap = {},
 			blockList = {count = 0, data = {}},
 		}
+		chunkRow[cz] = chunk
 	end
-	
-	local chunk = chunkMap[cx][cz]
 	
 	-- Update Block map and list
 	local blockMap = chunk.blockMap
 	local blockList = chunk.blockList
-	if blockMap[bx] and blockMap[bx][bz] then
+	local stateRow = blockStateMap[bx]
+	local mapRow = blockMap[bx]
+	local otherIndex = mapRow and mapRow[bz]
+	if otherIndex then
 		-- There is already a pending change for this block
-		local otherIndex = blockMap[bx][bz]
-		local otherTex = blockList.data[otherIndex].tex
-		if blockStateMap[bx] and blockStateMap[bx][bz] == myTex then
+		local data = blockList.data
+		local other = data[otherIndex]
+		if stateRow and stateRow[bz] == myTex then
 			-- Remove pending change
-			local endX = blockList.data[blockList.count].x
-			local endZ = blockList.data[blockList.count].z
-			blockList.data[otherIndex] = blockList.data[blockList.count]
-			blockMap[endX][endZ] = otherIndex
-			blockMap[bx][bz] = nil
-			blockList.data[blockList.count] = nil
-			blockList.count = blockList.count - 1
-		elseif myTex ~= otherTex then
+			local count = blockList.count
+			local last = data[count]
+			data[otherIndex] = last
+			blockMap[last.x][last.z] = otherIndex
+			mapRow[bz] = nil
+			data[count] = nil
+			blockList.count = count - 1
+		elseif myTex ~= other.tex then
 			-- Replace pending change
-			blockList.data[otherIndex].tex = myTex
+			other.tex = myTex
 		end
 		return -- Always return, square is sure to be already marked.
-	elseif not (blockStateMap[bx] and blockStateMap[bx][bz]) and myTex == 0 then
+	end
+	local state = stateRow and stateRow[bz]
+	if not state and myTex == 0 then
 		-- adding no new texture to unchanged block
 		return
-	elseif blockStateMap[bx] and blockStateMap[bx][bz] == myTex then
+	elseif stateRow and state == myTex then
 		-- Nothing to do if there is no change to the seen map`
 		-- and if there is no pending change to this block.
 		return
 	else
 		-- Add a new pending change.
-		blockList.count = blockList.count + 1
-		blockList.data[blockList.count] = {x = bx, z = bz, tex = myTex}
-		blockMap[bx] = blockMap[bx] or {}
-		blockMap[bx][bz] = blockList.count
+		local count = blockList.count + 1
+		blockList.count = count
+		blockList.data[count] = {x = bx, z = bz, tex = myTex}
+		if not mapRow then
+			mapRow = {}
+			blockMap[bx] = mapRow
+		end
+		mapRow[bz] = count
 	end
 end
 
@@ -173,9 +183,11 @@ local function changeBlockList()
 	if type(blockList) == "table" then
 		local blockX, blockZ, blockTex = blockList[1], blockList[2], blockList[3]
 		local i = 1
-		while blockX[i] do
-			ChangeTextureBlock(blockX[i], blockZ[i], blockTex[i])
+		local x = blockX[i] -- each read of a SYNCED table is a proxy call: read once
+		while x do
+			ChangeTextureBlock(x, blockZ[i], blockTex[i])
 			i = i + 1
+			x = blockX[i]
 		end
 	end
 end
