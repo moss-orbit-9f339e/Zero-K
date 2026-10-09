@@ -429,19 +429,28 @@ function gadget:AllowWeaponTarget(unitID, targetID, attackerWeaponNum, attackerW
 	return true, basePriority + defPrio + velocityAdd + lastShotBonus -- bigger value have lower priority
 end
 
+local function ClearTable(tab)
+	for key in pairs(tab) do
+		tab[key] = nil
+	end
+end
+
 function gadget:GameFrame(f)
 	if f%16 == 8 then -- f%16 == 0 happens just before AllowWeaponTarget
-		remNormalPriorityModifier = {}
-		remUnitHealth = {}
-		remUnitHealthPriority = {}
-		remSpeed = {}
-		remCapturePriorityModifer = {}
-		remTransportiee = {}
-		remVisible = {}
-		remScaledMass = {}
-		remStunned = {}
-		remStunAttackers = {}
-		remBuildProgress = {}
+		-- Clear in place rather than replacing the tables, to avoid garbage.
+		ClearTable(remNormalPriorityModifier)
+		ClearTable(remUnitHealth)
+		ClearTable(remUnitHealthPriority)
+		ClearTable(remSpeed)
+		ClearTable(remCapturePriorityModifer)
+		ClearTable(remTransportiee)
+		for _, allyTeamVisible in pairs(remVisible) do
+			ClearTable(allyTeamVisible)
+		end
+		ClearTable(remScaledMass)
+		ClearTable(remStunned)
+		ClearTable(remStunAttackers)
+		ClearTable(remBuildProgress)
 	end
 end
 
