@@ -1489,13 +1489,11 @@ do
 				unitID    = visibleUnits[i]
 				unitDefID = GetUnitDefID(unitID)
 				if (unitDefID) then
-					if ((not Spring.GetUnitRulesParam(unitID, "no_healthbar")) and DrawUnitInfos(unitID, unitDefID)) or JustGetOverlayInfos(unitID, unitDefID) then
-						local x, y, z = Spring.GetUnitPosition(unitID)
-						if not (x and y and z) then
-							Spring.Log("HealthBars", "error", "missing position and unitDef of unit " .. unitID)
-						else
-							Spring.MarkerAddPoint(x, y, z, "Missing unitDef")
-						end
+					-- DrawUnitInfos also collects the overlay infos; collect them separately only without a bar
+					if Spring.GetUnitRulesParam(unitID, "no_healthbar") then
+						JustGetOverlayInfos(unitID, unitDefID)
+					else
+						DrawUnitInfos(unitID, unitDefID)
 					end
 				elseif debugMode then
 					local x, y, z = Spring.GetUnitPosition(unitID)
