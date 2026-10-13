@@ -262,6 +262,7 @@ end
 function gadget:UnitTaken(unitID, unitDefID, oldTeamID, teamID)
 	if unitMap[unitID] then
 		unitMap[unitID].teamID = teamID
+		unitMap[unitID].oldChargeRate = false -- the priority gadget dropped our resource demand on transfer
 	end
 end
 
