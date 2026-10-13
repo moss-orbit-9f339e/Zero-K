@@ -654,6 +654,9 @@ function gadget:UnitTaken(unitID, unitDefID, oldTeamID, teamID)
 	if miscResourceDrain[unitID] then
 		StopMiscPriorityResourcing(unitID)
 	end
+	if teamMiscPriorityUnits[oldTeamID] then
+		teamMiscPriorityUnits[oldTeamID][unitID] = nil
+	end
 end
 
 --------------------------------------------------------------------------------
