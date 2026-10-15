@@ -1667,8 +1667,10 @@ local visibleUnits = {}
 -- shader expands it into the background and progress quads of the immediate mode
 -- path, billboarded at the unit's draw position, which the vertex shader reads from
 -- the engine's per-unit uniform buffer (no GetUnitViewPosition calls). Bars are
--- gathered once per simulation frame (their inputs only change then) and only the
--- elements that changed are uploaded. Draw-frame dependent things are evaluated on
+-- gathered once per simulation frame for owners used by the GPU. Dormant owners
+-- are refreshed before their next GPU draw; engine-reload evaluations retain their
+-- original order because they also update shared definition data. Only changed
+-- elements are uploaded, after restoring draw order. Draw-frame things are evaluated on
 -- the GPU: visibility (engine draw flag), distance fading, the blink and jump flash
 -- colours and the progress of bars that advance linearly with the game frame
 -- (reload & co, see AddPercentBar).
@@ -1815,16 +1817,19 @@ in DataVS {
 
 out DataGS {
 	vec4 g_color;
+	float g_fogFactor;
 };
 
 vec3 anchorPos;
 vec3 rightVec;
 vec3 upVec;
+float fogFactor;
 
 // x, y as in the immediate mode path: in the billboarded, barScale scaled frame
 void EmitCorner(float x, float y, vec4 color)
 {
 	g_color = color;
+	g_fogFactor = fogFactor;
 	gl_Position = cameraViewProj * vec4(anchorPos + rightVec * x + upVec * y, 1.0);
 	EmitVertex();
 }
@@ -1835,6 +1840,11 @@ void main()
 		return;
 	}
 	anchorPos = dataIn[0].v_anchor.xyz;
+	// DrawWorld enables GL_LINEAR fog for the immediate bars. Its default
+	// GL_FRAGMENT_DEPTH source uses absolute eye-space Z, not window depth
+	// or radial distance. Billboard corners all have the anchor's eye-space Z.
+	float fogDist = abs((cameraView * vec4(anchorPos, 1.0)).z);
+	fogFactor = clamp((fogParams.y - fogDist) * fogParams.w, 0.0, 1.0);
 	// gl.Billboard: camera right/up axes
 	rightVec = cameraViewInv[0].xyz * barDims.w;
 	upVec = cameraViewInv[1].xyz * barDims.w;
@@ -1872,10 +1882,12 @@ void main()
 #extension GL_ARB_uniform_buffer_object : require
 #extension GL_ARB_shading_language_420pack: require
 
+//__ENGINEUNIFORMBUFFERDEFS__
 #line 30000
 
 in DataGS {
 	vec4 g_color;
+	float g_fogFactor;
 };
 
 out vec4 fragColor;
@@ -1883,6 +1895,8 @@ out vec4 fragColor;
 void main(void)
 {
 	fragColor = g_color;
+	// Fixed-function fog mixes RGB only; retain bar alpha for source-alpha blending.
+	fragColor.rgb = mix(clamp(fogColor.rgb, 0.0, 1.0), g_color.rgb, g_fogFactor);
 }
 ]==]
 
@@ -1954,13 +1968,16 @@ void main(void)
 			inst = {},     -- owner -> {element of bar 1, element of bar 2, ...}
 			count = {},    -- owner -> number of bars
 			dirty = {},    -- elements to upload
+			dirtySet = {}, -- an element can change both value and position before flushing
 			dirtyN = 0,
+			orderDirty = true,
 		}
 	end
 
 	local function ClearDirty(buf)
 		local dirty = buf.dirty
 		for i = 1, buf.dirtyN do
+			buf.dirtySet[dirty[i]] = nil
 			dirty[i] = nil
 		end
 		buf.dirtyN = 0
@@ -1974,6 +1991,8 @@ void main(void)
 		buf.c2ref = {}
 		buf.inst = {}
 		buf.count = {}
+		buf.orderDirty = true
+		buf.orderedList = nil
 		ClearDirty(buf)
 	end
 
@@ -2015,12 +2034,15 @@ void main(void)
 	end
 
 	local function MarkDirty(buf, e)
+		if buf.dirtySet[e] then return end
+		buf.dirtySet[e] = true
 		local n = buf.dirtyN + 1
 		buf.dirtyN = n
 		buf.dirty[n] = e
 	end
 
 	local function RemoveElement(buf, e)
+		buf.orderDirty = true
 		local last = buf.used - 1
 		if e ~= last then
 			local data = buf.data
@@ -2062,6 +2084,7 @@ void main(void)
 			local changed = false
 			local o
 			if not e then
+				buf.orderDirty = true
 				e = buf.used
 				if e >= buf.cap then
 					GrowBarBuffer(buf, e + 1)
@@ -2141,6 +2164,7 @@ void main(void)
 		local runStart, runEnd = -1, -1
 		for i = 1, n do
 			local e = dirty[i]
+			buf.dirtySet[e] = nil
 			dirty[i] = nil
 			if e < used then
 				if runStart >= 0 and e <= runEnd + 4 then
@@ -2169,6 +2193,12 @@ void main(void)
 	local unitInstData = {} -- unitID -> engine instance data {matrix offset, uniform index, info, bpose offset}
 	local legacyUnits  = {} -- unitID -> unitDefID: drawn by the immediate mode path (stockpile icon)
 	local lastEval     = {} -- unitID -> unitPass of its last evaluation
+	-- Demand from the last draw. Keep dormant instances, but do not rebuild bars
+	-- that are drawn immediately or not drawn at all. A pending owner is refreshed
+	-- before its next GPU draw, including camera movement while paused.
+	local unitDemand, unitPending = {}, {}
+	local unitCustomInfo = {}
+	local unitDrawMode = {} -- unitID -> 0: no position, 1: GPU, 2: immediate
 	local newUnits     = {}
 	local unitStamp    = 0
 	local unitPass     = 0
@@ -2229,22 +2259,25 @@ void main(void)
 		unitInstData[unitID] = nil
 		legacyUnits[unitID] = nil
 		lastEval[unitID] = nil
+		unitDemand[unitID], unitPending[unitID], unitDrawMode[unitID] = nil, nil, nil
+		unitCustomInfo[unitID] = nil
 	end
 
 	local function EvalUnit(unitID)
 		lastEval[unitID] = unitPass
+		unitPending[unitID] = nil
 		local unitDefID = spGetUnitDefID(unitID)
 		if not unitDefID then
 			UntrackUnitGL4(unitID)
 			return
 		end
 		local bars, n, height
-		local ci
+		local ci = GetUnitCustomInfo(unitDefID)
+		unitCustomInfo[unitID] = ci
 		if spGetUnitRulesParam(unitID, "no_healthbar") then
 			legacyUnits[unitID] = nil
 			n = 0
 		else
-			ci = GetUnitCustomInfo(unitDefID)
 			if ci.canStockpile then
 				-- stockpile icon and count: drawn by the immediate mode path every frame
 				legacyUnits[unitID] = unitDefID
@@ -2256,6 +2289,20 @@ void main(void)
 		end
 		if n > 0 or unitBuf.count[unitID] then
 			CommitBars(unitBuf, unitID, bars, n, nil, nil, nil, height, unitInstData[unitID])
+		end
+	end
+
+	local function UpdateUnitBars(unitID)
+		local ci = unitCustomInfo[unitID]
+		-- GatherUnitBars updates the shared def's reloadTime for engine weapons.
+		-- Keep those evaluations in their original order, even for dormant bars:
+		-- another unit of that def can use this value for minReloadTime filtering.
+		local pollsReload = ci and not ci.scriptReload and not ci.canReammo
+			and (ci.dyanmicComm or ci.reloadTime >= options.minReloadTime.value)
+		if unitDemand[unitID] == false and not pollsReload and not (ci and ci.canStockpile) then
+			unitPending[unitID] = true
+		else
+			EvalUnit(unitID)
 		end
 	end
 
@@ -2287,7 +2334,7 @@ void main(void)
 				if trackStamp[unitID] then
 					trackStamp[unitID] = stamp
 					if doEval and lastEval[unitID] ~= unitPass then
-						EvalUnit(unitID)
+						if full then EvalUnit(unitID) else UpdateUnitBars(unitID) end
 					end
 				else
 					trackStamp[unitID] = stamp
@@ -2320,12 +2367,13 @@ void main(void)
 			for i = 1, #list do
 				local unitID = list[i]
 				if trackStamp[unitID] and lastEval[unitID] ~= unitPass then
-					EvalUnit(unitID)
+					if full then EvalUnit(unitID) else UpdateUnitBars(unitID) end
 				end
 			end
 		end
 
-		FlushBarBuffer(unitBuf)
+		-- UpdateGL4 flushes value-only changes. Layout changes wait for ordering
+		-- in DrawWorldGL4, so a changed-and-moved bar is uploaded once.
 	end
 
 	----------------------------------------------------------------------------
@@ -2334,6 +2382,7 @@ void main(void)
 	local featStamp    = {} -- featureID -> stamp of the last feature list that contained it
 	local featEntry    = {} -- featureID -> its {x, y, z, featureID, featureDefID} entry in that list
 	local featLastEval = {} -- featureID -> featurePass of its last evaluation
+	local featDemand, featPending, featDrawMode = {}, {}, {}
 	local newFeatures  = {}
 	local featureStamp = 0
 	local featurePass  = 0
@@ -2346,10 +2395,12 @@ void main(void)
 		featStamp[featureID] = nil
 		featEntry[featureID] = nil
 		featLastEval[featureID] = nil
+		featDemand[featureID], featPending[featureID], featDrawMode[featureID] = nil, nil, nil
 	end
 
 	local function EvalFeature(featureID)
 		featLastEval[featureID] = featurePass
+		featPending[featureID] = nil
 		if not spValidFeatureID(featureID) then
 			UntrackFeature(featureID)
 			return
@@ -2407,12 +2458,16 @@ void main(void)
 			for i = 1, #list do
 				local featureID = list[i][4]
 				if featStamp[featureID] and featLastEval[featureID] ~= featurePass and (evalAll or count[featureID]) then
-					EvalFeature(featureID)
+					if not full and featDemand[featureID] == false then
+						featPending[featureID] = true
+					else
+						EvalFeature(featureID)
+					end
 				end
 			end
 		end
 
-		FlushBarBuffer(featBuf)
+		-- As for units, avoid uploading a layout that still needs reordering.
 	end
 
 	----------------------------------------------------------------------------
@@ -2438,7 +2493,26 @@ void main(void)
 
 	-- The packed buffer changes order when bars disappear. Restore visible-list
 	-- order before drawing: alpha blending makes overlapping bars order-sensitive.
+	local function IsBarBufferOrdered(buf, list, features)
+		if buf.orderDirty then return false end
+		local old = buf.orderedList
+		if old == list then return true end
+		-- The visibility cache returns a new table each sim frame, usually with
+		-- exactly the same IDs in the same order. Do not walk all its bars again.
+		if not old or #old ~= #list then return false end
+		for i = 1, #list do
+			if features then
+				if old[i][4] ~= list[i][4] then return false end
+			elseif old[i] ~= list[i] then
+				return false
+			end
+		end
+		buf.orderedList = list
+		return true
+	end
+
 	local function OrderBarBuffer(buf, list, features)
+		if IsBarBufferOrdered(buf, list, features) then return end
 		local nextElement = 0
 		for i = 1, #list do
 			local id = features and list[i][4] or list[i]
@@ -2462,6 +2536,8 @@ void main(void)
 				nextElement = nextElement + 1
 			end
 		end
+		buf.orderDirty = false
+		buf.orderedList = list
 	end
 
 	local function DrawRange(buf, first, count, features)
@@ -2483,36 +2559,75 @@ void main(void)
 		shader:Deactivate()
 	end
 
+	-- Use the draw's current camera/positions, not Update's or the previous draw's.
+	-- This replaces the distance checks in the drawing loops below. In particular,
+	-- crossing a distance threshold must not wait for another simulation frame.
+	local function PrepareDraw()
+		local nearSq = UnitNearSq()
+		for i = 1, #visibleUnits do
+			local id = visibleUnits[i]
+			local x, y, z = Spring.GetUnitViewPosition(id)
+			local mode = 0
+			if x then
+				local dx, dy, dz = x-cx, y-cy, z-cz
+				local dist = dx*dx + dy*dy + dz*dz
+				if dist < nearSq or legacyUnits[id] then
+					mode = 2
+				else
+					-- Keep the shader's unit max-distance test authoritative (its
+					-- draw position and float precision need not match Lua's).
+					mode = 1
+					if unitPending[id] then
+						EvalUnit(id)
+						if legacyUnits[id] then mode = 2 end
+					end
+				end
+			end
+			unitDrawMode[id] = mode
+			unitDemand[id] = mode == 1
+		end
+
+		nearSq = FeatureNearSq()
+		for i = 1, #visibleFeatures do
+			local entry = visibleFeatures[i]
+			local id = entry[4]
+			local dx, dy, dz = entry[1]-cx, entry[2]-cy, entry[3]-cz
+			local dist = dx*dx + dy*dy + dz*dz
+			local mode = 0
+			if spValidFeatureID(id) and dist < featureDistSq then
+				mode = (dist < nearSq) and 2 or 1
+				if mode == 1 and featPending[id] then EvalFeature(id) end
+			end
+			featDrawMode[id] = mode
+			featDemand[id] = mode == 1
+		end
+	end
+
 	function DrawWorldGL4()
 		if not Spring.IsGUIHidden() then
 			if (#visibleUnits + #visibleFeatures == 0) or not camBelowMaxHeight then return end
 			if WG.Cutscene and WG.Cutscene.IsInCutscene() then return end
 			glDepthMask(true)
 			cx, cy, cz = spGetCameraPosition()
+			PrepareDraw()
 			OrderBarBuffer(unitBuf, visibleUnits, false)
 			OrderBarBuffer(featBuf, visibleFeatures, true)
 			FlushBarBuffer(unitBuf)
 			FlushBarBuffer(featBuf)
 
-			local nearSq = UnitNearSq()
 			local first, count = 0, 0
 			for i = 1, #visibleUnits do
 				local id = visibleUnits[i]
-				local x, y, z = Spring.GetUnitViewPosition(id)
 				local n = unitBuf.count[id] or 0
-				local immediate = legacyUnits[id]
-				if x then
-					local dx, dy, dz = x-cx, y-cy, z-cz
-					if dx*dx+dy*dy+dz*dz < nearSq then immediate = true end
-				end
-				if x and not immediate and n > 0 then
+				local mode = unitDrawMode[id]
+				if mode == 1 and n > 0 then
 					local offset = unitBuf.inst[id][1]
 					if count > 0 and offset ~= first+count then
 						DrawRange(unitBuf, first, count, false); count = 0
 					end
 					if count == 0 then first = offset end
 					count = count + n
-				elseif immediate and x then
+				elseif mode == 2 then
 					DrawRange(unitBuf, first, count, false); count = 0
 					local defID = spGetUnitDefID(id)
 					if defID and not spGetUnitRulesParam(id, "no_healthbar") then
@@ -2522,16 +2637,16 @@ void main(void)
 			end
 			DrawRange(unitBuf, first, count, false)
 
-			nearSq = FeatureNearSq()
 			first, count = 0, 0
 			for i = 1, #visibleFeatures do
 				local entry = visibleFeatures[i]
 				local id = entry[4]
-				local dx, dy, dz = entry[1]-cx, entry[2]-cy, entry[3]-cz
-				local dist = dx*dx+dy*dy+dz*dz
 				local n = featBuf.count[id] or 0
-				if spValidFeatureID(id) and dist < featureDistSq then
-					if dist < nearSq then
+				local mode = featDrawMode[id]
+				if mode ~= 0 then
+					if mode == 2 then
+						local dx, dy, dz = entry[1]-cx, entry[2]-cy, entry[3]-cz
+						local dist = dx*dx+dy*dy+dz*dz
 						DrawRange(featBuf, first, count, true); count = 0
 						addTitle = dist < featureTitleSq
 						addPercent = dist < featurePercentSq
@@ -2560,8 +2675,10 @@ void main(void)
 		gl4Gather = false
 		barDrawer.TakeBars()
 		trackStamp, unitInstData, legacyUnits, lastEval = {}, {}, {}, {}
+		unitDemand, unitPending, unitDrawMode, unitCustomInfo = {}, {}, {}, {}
 		trackedCount = 0
 		featStamp, featEntry, featLastEval = {}, {}, {}
+		featDemand, featPending, featDrawMode = {}, {}, {}
 		if unitBuf then
 			ClearBarBuffer(unitBuf)
 		end
@@ -2653,6 +2770,10 @@ void main(void)
 	function UpdateGL4()
 		UnitPass(visibleUnits, gameFrame)
 		FeaturePass(visibleFeatures, gameFrame)
+		if IsBarBufferOrdered(unitBuf, visibleUnits, false) then FlushBarBuffer(unitBuf) end
+		if IsBarBufferOrdered(featBuf, visibleFeatures, true) then FlushBarBuffer(featBuf) end
+		-- Changed layouts are ordered and uploaded together in DrawWorldGL4.
+		-- Unchanged layouts can upload here without sending the same bars twice.
 	end
 end
 
