@@ -70,7 +70,6 @@ local glPushMatrix       = gl.PushMatrix
 local glTranslate        = gl.Translate
 local glCallList         = gl.CallList
 local glCreateList       = gl.CreateList
-local glDrawCircle
 
 local GL_FRONT_AND_BACK = GL.FRONT_AND_BACK
 local GL_FILL           = GL.FILL
@@ -1113,63 +1112,106 @@ local function getSpotColor(id)
 	return Spring.GetTeamColor(teamID)
 end
 
+-- Spots grouped by circle line width (the width depends on the metal value), in order of first
+-- appearance, so that the draw lists change the line width once per group instead of twice per spot.
+local function GetSpotWidthGroups()
+	local groups, byWidth = {}, {}
+	for i = 1, #WG.metalSpots do
+		local spot = WG.metalSpots[i]
+		local width = ((spot.metal > 0 and spot.metal) or 0.1) * metalmultInv
+		local group = byWidth[width]
+		if not group then
+			group = {width = width}
+			byWidth[width] = group
+			groups[#groups + 1] = group
+		end
+		group[#group + 1] = i
+	end
+	return groups
+end
+
 local function calcMainMexDrawList()
 	if not WG.metalSpots then
 		return
 	end
 
-	for i = 1, #WG.metalSpots do
-		local spot = WG.metalSpots[i]
-		local x,z = spot.x, spot.z
-		local y = spotHeights[i]
+	local groups = GetSpotWidthGroups()
+	gl.DepthTest(true)
 
-		local r, g, b = getSpotColor(i)
-		local width = (spot.metal > 0 and spot.metal) or 0.1
-		width = width * metalmultInv
-
-		glPushMatrix()
-
-		gl.DepthTest(true)
-
-		glColor(0,0,0,0.7)
-		glLineWidth(width*2.4)
-		glDrawGroundCircle(x, 1, z, 40, 32)
-		glColor(r,g,b,0.7)
-		glLineWidth(width*1.5)
-		glDrawGroundCircle(x, 1, z, 40, 32)
-
-		glPopMatrix()
+	-- Black outlines first, then the team colour on top, as before for each spot.
+	glColor(0,0,0,0.7)
+	for g = 1, #groups do
+		local group = groups[g]
+		glLineWidth(group.width*2.4)
+		for j = 1, #group do
+			local spot = WG.metalSpots[group[j]]
+			glDrawGroundCircle(spot.x, 1, spot.z, 40, 32)
+		end
+	end
+	for g = 1, #groups do
+		local group = groups[g]
+		glLineWidth(group.width*1.5)
+		for j = 1, #group do
+			local i = group[j]
+			local spot = WG.metalSpots[i]
+			local r, g2, b = getSpotColor(i)
+			glColor(r,g2,b,0.7)
+			glDrawGroundCircle(spot.x, 1, spot.z, 40, 32)
+		end
 	end
 
 	glLineWidth(1.0)
 	glColor(1,1,1,1)
 end
 
+-- The same 35-segment circle as gl.Utilities.DrawCircle, drawn as a plain line loop. That function
+-- draws through the stencil volume path. The minimap renders into a colour-only FBO by default
+-- (MiniMapRenderToTexture), where the depth and stencil tests always pass, so the path draws the
+-- plain line; it only adds state changes.
+local MINIMAP_CIRCLE_DIVS = 35
+local minimapCircleSin, minimapCircleCos = {}, {}
+for i = 1, MINIMAP_CIRCLE_DIVS do
+	local alpha = (i - 1) * 2 * math.pi / MINIMAP_CIRCLE_DIVS
+	minimapCircleSin[i], minimapCircleCos[i] = math.sin(alpha), math.cos(alpha)
+end
+
+local function MinimapCircleVertices(x, z, radius)
+	for i = MINIMAP_CIRCLE_DIVS, 1, -1 do
+		glVertex(x + radius*minimapCircleSin[i], z + radius*minimapCircleCos[i], 0)
+	end
+end
+
 local function calcMinimapMexDrawList()
 	if not WG.metalSpots then
 		return
 	end
-	if not glDrawCircle then
-		glDrawCircle = gl.Utilities.DrawCircle -- FIXME make utilities available early enough to do this in init
+
+	local groups = GetSpotWidthGroups()
+	-- The stencil volume path left these off.
+	gl.DepthTest(false)
+	gl.DepthMask(false)
+
+	glColor(0,0,0,1)
+	for g = 1, #groups do
+		local group = groups[g]
+		glLineWidth(group.width*2.0)
+		for j = 1, #group do
+			local spot = WG.metalSpots[group[j]]
+			glBeginEnd(GL.LINE_LOOP, MinimapCircleVertices, spot.x, spot.z, MINIMAP_DRAW_SIZE)
+		end
 	end
-	
-	for i = 1, #WG.metalSpots do
-		local spot = WG.metalSpots[i]
-		local x,z = spot.x, spot.z
-
-		local r,g,b = getSpotColor(i)
-		local width = (spot.metal > 0 and spot.metal) or 0.1
-		width = width * metalmultInv
-
-		glColor(0,0,0,1)
-		glLineWidth(width*2.0)
-		glDrawCircle(x, z, MINIMAP_DRAW_SIZE)
-		glLineWidth(width*0.8)
-		glColor(r,g,b,1.0)
-
-		glDrawCircle(x, z, MINIMAP_DRAW_SIZE)
+	for g = 1, #groups do
+		local group = groups[g]
+		glLineWidth(group.width*0.8)
+		for j = 1, #group do
+			local i = group[j]
+			local spot = WG.metalSpots[i]
+			local r, g2, b = getSpotColor(i)
+			glColor(r,g2,b,1.0)
+			glBeginEnd(GL.LINE_LOOP, MinimapCircleVertices, spot.x, spot.z, MINIMAP_DRAW_SIZE)
+		end
 	end
-	
+
 	glLineWidth(1.0)
 	glColor(1,1,1,1)
 end
