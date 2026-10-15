@@ -592,6 +592,7 @@ local gl4Gather = false
 -- GL4 path state, see "GL4 (instanced) path" below.
 local gl4Ready = false          -- GL4 resources exist
 local gl4Active = false         -- the GL4 path draws this frame (set in Update)
+local gl4DrawStarted = false    -- a failed draw may already have emitted bars
 local camBelowMaxHeight = false -- IsCameraBelowMaxHeight() of this frame's Update
 local InitGL4, ShutdownGL4, ResetGL4, UpdateGL4, DrawWorldGL4, UntrackUnitGL4
 
@@ -1977,7 +1978,8 @@ void main(void)
 	local function ClearDirty(buf)
 		local dirty = buf.dirty
 		for i = 1, buf.dirtyN do
-			buf.dirtySet[dirty[i]] = nil
+			local e = dirty[i]
+			if e ~= nil then buf.dirtySet[e] = nil end
 			dirty[i] = nil
 		end
 		buf.dirtyN = 0
@@ -2555,6 +2557,7 @@ void main(void)
 			glUniform(locBgBottom, bkBottom[1], bkBottom[2], bkBottom[3], bkBottom[4])
 			glUniform(locDist, healthbarDistSq, 0, 0, 0)
 		end
+		gl4DrawStarted = true
 		buf.vao:DrawArrays(GL_POINTS, 1, 0, count, first)
 		shader:Deactivate()
 	end
@@ -2604,6 +2607,7 @@ void main(void)
 	end
 
 	function DrawWorldGL4()
+		gl4DrawStarted = false
 		if not Spring.IsGUIHidden() then
 			if (#visibleUnits + #visibleFeatures == 0) or not camBelowMaxHeight then return end
 			if WG.Cutscene and WG.Cutscene.IsInCutscene() then return end
@@ -2631,6 +2635,7 @@ void main(void)
 					DrawRange(unitBuf, first, count, false); count = 0
 					local defID = spGetUnitDefID(id)
 					if defID and not spGetUnitRulesParam(id, "no_healthbar") then
+						gl4DrawStarted = true
 						DrawUnitInfos(id, defID)
 					end
 				end
@@ -2650,6 +2655,7 @@ void main(void)
 						DrawRange(featBuf, first, count, true); count = 0
 						addTitle = dist < featureTitleSq
 						addPercent = dist < featurePercentSq
+						gl4DrawStarted = true
 						DrawFeatureInfos(id, entry[5], entry[1], entry[2], entry[3])
 					elseif n > 0 then
 						local offset = featBuf.inst[id][1]
@@ -2792,8 +2798,7 @@ do
 			if ok then
 				return
 			end
-			-- An upload or draw failed: undo the state DrawWorldGL4 sets and use the immediate
-			-- renderer from the next frame (part of this frame may be drawn already).
+			-- Restore state and fall back immediately unless a draw may have emitted bars.
 			Spring.Echo("HealthBars: GL4 draw failed, using immediate mode", tostring(err))
 			gl.UseShader(0)
 			gl.Texture(false)
@@ -2802,7 +2807,7 @@ do
 			glColor(1, 1, 1, 1)
 			pcall(ShutdownGL4)
 			gl4Ready, gl4Active = false, false
-			return
+			if gl4DrawStarted then return end
 		end
 		if not Spring.IsGUIHidden() then
 			if (#visibleUnits + #visibleFeatures == 0) then
