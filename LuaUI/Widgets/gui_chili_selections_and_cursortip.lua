@@ -2343,15 +2343,24 @@ local function GetSingleUnitInfoPanel(parentControl, isTooltipVersion)
 		local morphShown = false
 		local visible = IsUnitInLos(unitID)
 		
-		if prevUnitID == unitID and prevUnitDefID == unitDefID and prevFeatureID == featureID and prevFeatureDefID == featureDefID and
+		if prevUnitID == unitID and (featureID or prevUnitDefID == unitDefID) and prevFeatureID == featureID and prevFeatureDefID == featureDefID and
 				prevVisible == visible and prevMorphTime == morphTime and prevMorphCost == morphCost and prevMousePlace == ((mousePlaceX and true) or false) then
 			
-			if not requiredOnly then
+			if not requiredOnly or featureID then
 				if unitID and unitDefID and visible then
 					UpdateDynamicUnitAttributes(unitID, unitDefID, featureID, UnitDefs[unitDefID])
 				end
 				if featureID then
 					UpdateDynamicFeatureAttributes(featureID, prevUnitDefID)
+
+					if playerNameLabel then
+						local teamID = Spring.GetFeatureTeam(featureID)
+						local playerName = teamID and GetPlayerCaption(teamID)
+						if playerName then
+							playerNameLabel:SetCaption(playerName)
+						end
+						playerNameLabel:SetVisibility((playerName and true) or false)
+					end
 				end
 				if unitDefID and not (unitID or featureID) then
 					if blueprint then
