@@ -974,11 +974,9 @@ local function f_v(t,xold,vold,mass,area,gravity,airDensity) -- a function that 
   local tmp = {hrzn=0,vert=0};
   local rho=1
   local b=(1.0/2.0)*airDensity*area*rho;
-  local horizontalSign = -1*abs(vold.hrzn)/vold.hrzn
-  local verticalSign = -1*abs(vold.vert)/vold.vert
   --MethodA: current spring implementation--
-  tmp.hrzn = (b/mass)*(vold.hrzn^2)*horizontalSign;--horizontal is back-and-forth movement
-  tmp.vert = -gravity+(b/mass)*(vold.vert^2)*verticalSign; --is vertical movement
+  tmp.hrzn = -(b/mass)*vold.hrzn*abs(vold.hrzn);--horizontal is back-and-forth movement
+  tmp.vert = -gravity-(b/mass)*vold.vert*abs(vold.vert); --is vertical movement
   --MethodB: ideal implementation (more accurate to real airdrag, not implemented in spring)--
   -- local totalVelocity = math.sqrt(vold.hrzn^2+vold.vert^2)
   -- tmp.hrzn = (b/mass)*(totalVelocity^2)*(vold.hrzn/totalVelocity)*horizontalSign;
@@ -1026,7 +1024,7 @@ end
 function SimulateWithDrag(velX,velY,velZ, x,y,z, gravity,mass,radius, airDensity)
 	radius = radius *0.01 --in centi-elmo (centimeter, or 10^-2) instead of elmo. See Spring/rts/Sim/Objects/SolidObject.cpp
 	local horizontalVelocity = sqrt(velX^2+velZ^2)
-	local horizontalAngle = atan2 (velX/horizontalVelocity, velZ/horizontalVelocity)
+	local horizontalAngle = atan2 (velX, velZ)
 	local hrznAngleCos = cos(horizontalAngle)
 	local hrznAngleSin = sin(horizontalAngle)
 
