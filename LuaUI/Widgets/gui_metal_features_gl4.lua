@@ -271,6 +271,19 @@ function widget:Update(dt)
 	end
 end
 
+function widget:Shutdown()
+	for featureID, apiID in pairs(handledFeatureApiIDs or {}) do
+		if WG.StopHighlightUnitGL4 then
+			WG.StopHighlightUnitGL4(apiID)
+		end
+	end
+	if WG.HighlightFeatureCus then
+		for i = 1, #(handledFeatureList or {}) do
+			WG.HighlightFeatureCus(handledFeatureList[i], 0)
+		end
+	end
+end
+
 function widget:SelectionChanged(units)
 	if not internalEnabled then
 		return
