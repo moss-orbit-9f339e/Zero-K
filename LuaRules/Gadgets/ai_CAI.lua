@@ -2838,13 +2838,13 @@ function gadget:GameFrame(n)
 		
 		if not data.suspend then
 		
-			if n%60 == 0 + team then
+			if n%60 == team%60 then
 				updateTeamResourcing(team)
 				executeControlFunction(team, n)
 				conJobAllocator(team)
 			end
 			
-			if n%40 == 15 + team then
+			if n%40 == (15 + team)%40 then
 				battleGroupHandler(team, n, n%200 == 15)
 			end
 			
@@ -2857,13 +2857,13 @@ function gadget:GameFrame(n)
 				gunshipJobHandler(team)
 			end
 			
-			if n%30 == 0 + team then
+			if n%30 == team%30 then
 				conJobHandler(team)
 				factoryJobHandler(team)
 				scoutJobHandler(team)
 			end
 			
-			if n%200 == 0 + team then
+			if n%200 == team%200 then
 				if debugData.showConJobList[team] then
 					echoConJobList(team)
 				end
@@ -2882,19 +2882,19 @@ function gadget:GameFrame(n)
 	
 	for allyTeam,data in pairs(allyTeamData) do
 		
-		if n%50 == 25 + allyTeam then
+		if n%50 == (25 + allyTeam)%50 then
 			if data.ai then
 				updateScoutingHeatmap(allyTeam,n, n%500 == 25)
 			end
 		end
 	
-		if n%200 == 0 + allyTeam then
+		if n%200 == allyTeam%200 then
 			if debugData.showEnemyForceCompostion[team] then
 				echoEnemyForceComposition(allyTeam)
 			end
 		end
 	
-		if n%120 == 30 + allyTeam then
+		if n%120 == (30 + allyTeam)%120 then
 			if data.ai then
 			
 				decayEnemyHeatmaps(allyTeam,n)
