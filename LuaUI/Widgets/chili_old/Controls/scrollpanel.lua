@@ -119,13 +119,7 @@ function ScrollPanel:GetCurrentExtents()
   local right  = self.x + self.width
   local bottom = self.y + self.height
 
-  if (left   < minLeft)   then minLeft   = left end
-  if (top    < minTop )   then minTop    = top end
-
-  if (right  > maxRight)  then maxRight  = right end
-  if (bottom > maxBottom) then maxBottom = bottom end
-
-  return minLeft, minTop, maxRight, maxBottom
+  return left, top, right, bottom
 end
 
 --//=============================================================================
