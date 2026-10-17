@@ -4,11 +4,7 @@
 uniform sampler2D screenCopyTex;
 uniform float sharpness;
 
-#if 0 // in case AMD drivers refuse to compile the shader, though according to GLSL spec they shouldn't
-	#define TEXEL_FETCH_OFFSET(t, c, l, o) texelFetch(t, c + o, l)
-#else
-	#define TEXEL_FETCH_OFFSET texelFetchOffset
-#endif
+#define TEXEL_FETCH_OFFSET(t, c, l, o) texelFetch(t, clamp((c) + (o), ivec2(0), textureSize(t, l) - ivec2(1)), l)
 
 in vec2 viewPos;
 out vec4 fragColor;
