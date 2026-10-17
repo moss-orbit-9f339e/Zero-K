@@ -27,6 +27,7 @@ end
 --//=============================================================================
 
 function ScrollPanel:SetScrollPos(x,y,inview, forceNotSmooth)
+  if forceNotSmooth then self._smoothScrollEnd = nil end
   if (self.smoothScroll) and not forceNotSmooth then
     self._oldScrollPosX = self.scrollPosX
     self._oldScrollPosY = self.scrollPosY
