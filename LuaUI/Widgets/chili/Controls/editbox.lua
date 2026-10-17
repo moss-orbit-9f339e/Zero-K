@@ -911,7 +911,7 @@ function EditBox:KeyPress(key, mods, isRepeat, label, unicode, ...)
 	elseif mods.ctrl and key == spGetKeyCode("a") then
 		if not self.multiline then
 			self:_SetSelection(1, 1, #txt + 1, 1)
-		else
+		elseif #self.lines > 0 then
 			self:_SetSelection(1, 1, #self.lines[#self.lines].text + 1, #self.lines)
 		end
 	else
