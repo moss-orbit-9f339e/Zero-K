@@ -317,7 +317,7 @@ function script.AimWeapon(num, heading, pitch)
 		Turn(turret, y_axis, heading, TURRET_TURN_SPEED)
 		Turn(gun, x_axis, -pitch, GUN_TURN_SPEED)
 		WaitForTurn(turret, y_axis)
-		WaitForTurn(gun, y_axis)
+		WaitForTurn(gun, x_axis)
 		StartThread(RestoreAfterDelay)
 
 		return deployed
