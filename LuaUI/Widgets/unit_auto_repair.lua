@@ -132,6 +132,8 @@ end
 
 function widget:UnitDestroyed(unitID, unitDefID, unitTeam)
 	repairUnits[unitID] = nil
+	idleRepairUnits[unitID] = nil
+	repairingUnits[unitID] = nil
 	unitsToRepair[unitID] = nil
 end
 
