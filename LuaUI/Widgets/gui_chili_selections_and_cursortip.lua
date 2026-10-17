@@ -2587,6 +2587,13 @@ local function GetTooltipWindow()
 		while window.children[1] do
 			window.children[1]:Dispose()
 		end
+		local hiddenChildren = {}
+		for child in pairs(window.children_hidden) do
+			hiddenChildren[#hiddenChildren + 1] = child
+		end
+		for i = 1, #hiddenChildren do
+			hiddenChildren[i]:Dispose()
+		end
 		textTooltip = Chili.TextBox:New{
 			name = "textTooltip",
 			x = 0,
@@ -2909,6 +2916,13 @@ local function GetSelectionWindow()
 	function externalFunctions.Reinitialise()
 		while mainPanel.children[1] do
 			mainPanel.children[1]:Dispose()
+		end
+		local hiddenChildren = {}
+		for child in pairs(mainPanel.children_hidden) do
+			hiddenChildren[#hiddenChildren + 1] = child
+		end
+		for i = 1, #hiddenChildren do
+			hiddenChildren[i]:Dispose()
 		end
 		singleUnitDisplay = GetSingleUnitInfoPanel(mainPanel, false)
 		multiUnitDisplay = GetMultiUnitInfoPanel(mainPanel)
