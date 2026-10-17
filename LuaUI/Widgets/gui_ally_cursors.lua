@@ -136,7 +136,8 @@ local n = 0
 function widget:Update(t)
   updateTimer = updateTimer + t
 
-  if (updateTimer%saveEach<0.2) then
+  if n < numMousePos and updateTimer >= (n + 1)*saveEach then
+    n = n + 1
     local mx,my = GetMouseState()
     local _,pos = TraceScreenRay(mx,my,true)
 
@@ -144,8 +145,6 @@ function widget:Update(t)
       poshistory[n*2]   = VFS.PackU16(floor(pos[1]))
       poshistory[n*2+1] = VFS.PackU16(floor(pos[3]))
     end
-
-    n = n + 1
   end
 
   if (updateTimer>sendPacketEvery)and(n>=numMousePos) then
