@@ -204,7 +204,9 @@ function gadget:ShieldPreDamaged(projectileID, proOwnerID, shieldEmitterWeaponNu
 	proData.resetNextFrame = true
 	proData.hasDamaged = true
 	if proData.resetNextFrameShield then
-		proData.resetNextFrameShield = {proData.resetNextFrameShield}
+		if type(proData.resetNextFrameShield) ~= "table" then
+			proData.resetNextFrameShield = {proData.resetNextFrameShield}
+		end
 		proData.resetNextFrameShield[#proData.resetNextFrameShield + 1] = shieldCarrierUnitID
 	else
 		proData.resetNextFrameShield = shieldCarrierUnitID
