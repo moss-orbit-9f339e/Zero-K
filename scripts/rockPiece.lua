@@ -87,7 +87,11 @@ function GG.ScriptRock.Oscillate(Func, rock, heading, rockAmount)
 		if rock.extraEffect then
 			rock.extraEffect(pos, speed)
 		end
-		WaitForTurn(rock.piece, rock.axis)
+		if Func == Move then
+			WaitForMove(rock.piece, rock.axis)
+		else
+			WaitForTurn(rock.piece, rock.axis)
+		end
 		Sleep(33)
 		rock.position = rock.position * rock.decay
 	end
