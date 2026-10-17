@@ -70,7 +70,7 @@ function GG.ScriptRock.Oscillate(Func, rock, heading, rockAmount)
 	rock.position = rock.position + (rockAmount * magnitude)
 	if rock.position > rock.maxPos then
 		rock.position = rock.maxPos
-	elseif -rock.position < -rock.maxPos then
+	elseif rock.position < -rock.maxPos then
 		rock.position = -rock.maxPos
 	end
 	
