@@ -766,7 +766,8 @@ function EditBox:ClearSelected()
 		left, right = right, left
 	end
 	self.cursor = right
-	while self.cursor ~= left do
+	-- '>' because an end inside a multibyte character can be stepped over.
+	while self.cursor > left do
 		self.text, self.cursor = Utf8BackspaceAt(self.text, self.cursor)
 	end
 	self.selStart = nil
