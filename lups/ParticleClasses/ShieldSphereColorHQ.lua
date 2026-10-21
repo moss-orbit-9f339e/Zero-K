@@ -164,15 +164,24 @@ function ShieldSphereColorHQParticle:Draw()
 		local hitPointCount = math.min(#hitTable, MAX_POINTS)
 		gl.UniformInt(hitPointCountUniform, hitPointCount)
 
-		local hitArray = {}
+		local hitArray = self._hitArray
+		if not hitArray then
+			hitArray = {}
+			self._hitArray = hitArray
+		end
+		for i = #hitArray, hitPointCount * 5 + 1, -1 do
+			hitArray[i] = nil
+		end
 		if hitPointCount > 0 then
 			--Spring.Echo("hitPointCount", hitPointCount)
 			for i = 1, hitPointCount do
-				table.insert(hitArray, hitTable[i].dx)
-				table.insert(hitArray, hitTable[i].dy)
-				table.insert(hitArray, hitTable[i].dz)
-				table.insert(hitArray, hitTable[i].mag)
-				table.insert(hitArray, hitTable[i].aoe)
+				local hit = hitTable[i]
+				local offset = (i - 1) * 5
+				hitArray[offset + 1] = hit.dx
+				hitArray[offset + 2] = hit.dy
+				hitArray[offset + 3] = hit.dz
+				hitArray[offset + 4] = hit.mag
+				hitArray[offset + 5] = hit.aoe
 			end
 		end
 		gl.UniformArray(hitPointsUniform, 2, hitArray)
