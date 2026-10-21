@@ -57,6 +57,33 @@ end
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
+--// Share identical unit visibility queries only while building a visible list.
+local unitVisibility
+local engineIsUnitVisible = Spring.IsUnitVisible
+local lupsSpring = {}
+for key, value in pairs(Spring) do
+	lupsSpring[key] = value
+end
+Spring = lupsSpring
+function Spring.IsUnitVisible(unitID, radius, noIconDraw)
+	if not unitVisibility or unitID == nil then
+		return engineIsUnitVisible(unitID, radius, noIconDraw)
+	end
+	local entry = unitVisibility[unitID]
+	local previous = entry
+	while entry do
+		if entry.radius == radius and entry.noIconDraw == noIconDraw then
+			return entry.visible
+		end
+		entry = entry.next
+	end
+	local visible = engineIsUnitVisible(unitID, radius, noIconDraw)
+	unitVisibility[unitID] = {
+		radius = radius, noIconDraw = noIconDraw, visible = visible, next = previous,
+	}
+	return visible
+end
+
 --// locals
 
 local push = table.insert
@@ -818,6 +845,7 @@ end
 
 
 local function CreateVisibleFxList()
+	unitVisibility = {}
 	local removeFX = {}
 	local removeCnt = 1
 
@@ -845,6 +873,7 @@ local function CreateVisibleFxList()
 			end
 		end
 	end
+	unitVisibility = nil
 	--Spring.Echo("Lups fx cnt", particles.GetIndexMax())
 
 	for i=1,removeCnt-1 do
