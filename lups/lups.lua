@@ -547,24 +547,27 @@ local function Draw(extension,layer,water)
 							------------------------------------------------------------------------------------
 							-- render in unit/piece space ------------------------------------------------------
 							------------------------------------------------------------------------------------
-							glPushMatrix()
-							if gadget and not IsUnitPositionKnown(unitID) then
-								local x, y, z = Spring.GetUnitPosition(unitID)
-								local a11, a12, a13, a14, a21, a22, a23, a24, a31, a32, a33, a34, a41, a42, a43, a44 = Spring.GetUnitTransformMatrix(unitID)
-								if a11 then
-									gl.MultMatrix(a11, a12, a13, a14, a21, a22, a23, a24, a31, a32, a33, a34, x, y, z , a44)
-								else
-									glUnitMultMatrix(unitID)
-								end
-							else
-								glUnitMultMatrix(unitID)
-							end
-							
+							local inUnitSpace = false
 
 							--// render effects
 							for i=1,#UnitEffects do
 								local fx = UnitEffects[i]
 								if (fx.alwaysVisible or fx.visible) and (not water or not fx.nowater) then
+									if not inUnitSpace then
+										glPushMatrix()
+										if gadget and not IsUnitPositionKnown(unitID) then
+											local x, y, z = Spring.GetUnitPosition(unitID)
+											local a11, a12, a13, a14, a21, a22, a23, a24, a31, a32, a33, a34, a41, a42, a43, a44 = Spring.GetUnitTransformMatrix(unitID)
+											if a11 then
+												gl.MultMatrix(a11, a12, a13, a14, a21, a22, a23, a24, a31, a32, a33, a34, x, y, z , a44)
+											else
+												glUnitMultMatrix(unitID)
+											end
+										else
+											glUnitMultMatrix(unitID)
+										end
+										inUnitSpace = true
+									end
 									if (fx.piecenum) then
 										--// enter piece space
 										glPushMatrix()
@@ -580,7 +583,9 @@ local function Draw(extension,layer,water)
 							end
 
 							--// leave unit space
-							glPopMatrix()
+							if inUnitSpace then
+								glPopMatrix()
+							end
 
 						else
 
