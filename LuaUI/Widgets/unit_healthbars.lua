@@ -659,21 +659,29 @@ local function GetBarDrawer()
 	end
 
 	local brightClr = {}
-	local function DrawUnitBar(offsetY, percent, color)
+	local function DrawUnitBarQuads(offsetY, percent, color)
 		brightClr[1] = color[1]*1.5; brightClr[2] = color[2]*1.5; brightClr[3] = color[3]*1.5; brightClr[4] = color[4]
 		local progress_pos = -barWidth + barWidth*2*percent
 		local bar_Height  = barHeight+offsetY
 		if percent < 1 then
-			glBeginEnd(GL_QUADS, DrawGradient, progress_pos, bar_Height, barWidth, offsetY, bkTop, bkBottom)
+			DrawGradient(progress_pos, bar_Height, barWidth, offsetY, bkTop, bkBottom)
 		end
-		glBeginEnd(GL_QUADS, DrawGradient, -barWidth, bar_Height, progress_pos, offsetY, brightClr, color)
+		DrawGradient(-barWidth, bar_Height, progress_pos, offsetY, brightClr, color)
+	end
+
+	local function DrawFeatureBarQuads(offsetY, percent, color)
+		brightClr[1] = color[1]*1.5; brightClr[2] = color[2]*1.5; brightClr[3] = color[3]*1.5; brightClr[4] = color[4]
+		local progress_pos = -featureBarWidth+featureBarWidth*2*percent
+		DrawGradient(progress_pos, featureBarHeight+offsetY, featureBarWidth, offsetY, fbkTop, fbkBottom)
+		DrawGradient(-featureBarWidth, featureBarHeight+offsetY, progress_pos, offsetY, brightClr, color)
+	end
+
+	local function DrawUnitBar(offsetY, percent, color)
+		glBeginEnd(GL_QUADS, DrawUnitBarQuads, offsetY, percent, color)
 	end
 
 	local function DrawFeatureBar(offsetY, percent, color)
-		brightClr[1] = color[1]*1.5; brightClr[2] = color[2]*1.5; brightClr[3] = color[3]*1.5; brightClr[4] = color[4]
-		local progress_pos = -featureBarWidth+featureBarWidth*2*percent
-		glBeginEnd(GL_QUADS, DrawGradient, progress_pos, featureBarHeight+offsetY, featureBarWidth, offsetY, fbkTop, fbkBottom)
-		glBeginEnd(GL_QUADS, DrawGradient, -featureBarWidth, featureBarHeight+offsetY, progress_pos, offsetY, brightClr, color)
+		glBeginEnd(GL_QUADS, DrawFeatureBarQuads, offsetY, percent, color)
 	end
 
 	local externalFunc = {}
