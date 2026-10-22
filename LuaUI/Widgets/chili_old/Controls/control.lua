@@ -854,7 +854,9 @@ function Control:_UpdateAllDList()
     gl.DeleteList(self._all_dlist)
     self._all_dlist = nil
   end
-  self._all_dlist = gl.CreateList(self.DrawForList,self)
+  if not (self.parent._UpdateAllDList and self.parent.useDList) then
+    self._all_dlist = gl.CreateList(self.DrawForList,self)
+  end
 
   if (self.parent)and(not self.parent._needRedraw)and(self.parent._UpdateAllDList)and(self.parent.useDList) then
     TaskHandler.RequestInstantUpdate(self.parent)
